@@ -1,0 +1,33 @@
+import asyncio
+import os
+from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
+from dotenv import load_dotenv
+
+from app.db.database import Database, DBConfig
+from app.handlers_admin_shop.start import router as start_router
+from app.handlers_admin_shop.orders import router as orders_router
+
+
+async def main():
+    load_dotenv()
+    token = os.getenv("ADMIN_SHOP_BOT_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("ADMIN_SHOP_BOT_TOKEN is empty in .env")
+
+    db = Database(DBConfig(path=os.getenv("DB_PATH", "shop.db")))
+    await db.init_schema()
+
+    bot = Bot(token=token)
+    dp = Dispatcher(storage=MemoryStorage())
+    dp["db"] = db
+
+    dp.include_router(start_router)
+    dp.include_router(orders_router)
+
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
