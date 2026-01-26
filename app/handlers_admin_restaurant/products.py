@@ -4,6 +4,7 @@ from aiogram.filters import StateFilter
 from aiogram.types import Message
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramBadRequest
 
 from app.db.database import Database
 from app.handlers_admin_restaurant.utils import get_admin_restaurant_ids
@@ -95,18 +96,44 @@ def kb_product_card(restaurant_id: int, category_id: int, product_id: int, is_ac
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-async def render_products_list(
-    message,
+async def render_products_list(message, db: Database, restaurant_id: int, category_id: int):
+    prod = ProductsRepo(db)
+    products = await prod.list_by_category(category_id, active_only=False)
+
+    try:
+        await message.edit_text(
+            "Позиции в категории:",
+            reply_markup=kb_products(products, restaurant_id, category_id),
+        )
+    except TelegramBadRequest as e:
+        # Telegram ругается, если текст и клавиатура не изменились
+        if "message is not modified" in str(e):
+            return
+        raise
+
+
+async def render_products_list_edit(
+    bot,
+    chat_id: int,
+    message_id: int,
     db: Database,
     restaurant_id: int,
-    category_id: int
+    category_id: int,
 ):
     prod = ProductsRepo(db)
     products = await prod.list_by_category(category_id, active_only=False)
-    await message.edit_text(
-        "Позиции в категории:",
-        reply_markup=kb_products(products, restaurant_id, category_id),
-    )
+
+    try:
+        await bot.edit_message_text(
+            "Позиции в категории:",
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=kb_products(products, restaurant_id, category_id),
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        raise
 
 
 async def render_product_card_edit(
@@ -186,21 +213,23 @@ async def add_product_price(message: Message, state: FSMContext, db: Database):
     await state.update_data(price=price)
     await state.set_state(ProductFSM.add_desc)
     await message.answer("Введите описание или отправьте '-' чтобы пропустить:")
-
+    return
+    
 
 @router.message(StateFilter(ProductFSM.add_desc))
 async def add_product_desc(message: Message, state: FSMContext, db: Database):
     desc = (message.text or "").strip()
     if desc == "-":
-        desc = ""
+        desc = ""  # пропуск описания
+    # пустое описание тоже разрешаем
 
     data = await state.get_data()
     restaurant_id = int(data["restaurant_id"])
     category_id = int(data["category_id"])
-    name = data["name"]
+    name = (data["name"] or "").strip()
     price = float(data["price"])
 
-    # Вставка в products
+    # сохраняем позицию
     async with db.conn() as conn:
         await conn.execute(
             """
@@ -210,25 +239,24 @@ async def add_product_desc(message: Message, state: FSMContext, db: Database):
             (restaurant_id, category_id, name, desc, price),
         )
         await conn.commit()
-        
-    data = await state.get_data()
-    
-    chat_id = int(data["origin_chat_id"])
-    msg_id = int(data["origin_message_id"])
 
+    # ВАЖНО: очищаем FSM, чтобы не спрашивало описание снова
     await state.clear()
 
-    # ✅ обновляем список позиций в ТОМ ЖЕ сообщении
-    await message.bot.edit_message_text(
-    "✅ Позиция добавлена.\n\nПозиции в категории:",
-    chat_id=chat_id,
-    message_id=msg_id,
-    reply_markup=kb_products(await ProductsRepo(db).list_by_category(category_id, active_only=False),
-                                 restaurant_id, category_id)
+    # Чтобы кнопки были ВНИЗУ, делаем новый список сообщением (а не edit старого)
+    prod = ProductsRepo(db)
+    products = await prod.list_by_category(category_id, active_only=False)
+
+    await message.answer(
+        "Позиции в категории:",
+        reply_markup=kb_products(products, restaurant_id, category_id),
     )
-    
-    await state.clear()
-    await message.answer("✅ Позиция добавлена. Вернитесь в категорию и обновите список.")
+
+    # (опционально) чистим сообщение пользователя с описанием
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("r:edit_name:"))
@@ -301,23 +329,34 @@ async def edit_name_apply(message: Message, state: FSMContext, db: Database):
 
     data = await state.get_data()
     product_id = int(data["product_id"])
-
-    async with db.conn() as conn:
-        await conn.execute("UPDATE products SET name=? WHERE id=?", (name, product_id))
-        await conn.commit()
-
-    data = await state.get_data()
     restaurant_id = int(data["restaurant_id"])
     category_id = int(data["category_id"])
     chat_id = int(data["origin_chat_id"])
     msg_id = int(data["origin_message_id"])
 
+    async with db.conn() as conn:
+        await conn.execute(
+            "UPDATE products SET name=? WHERE id=?",
+            (name, product_id),
+        )
+        await conn.commit()
+
     await state.clear()
 
     await render_product_card_edit(
-        message.bot, chat_id, msg_id, db,
-        restaurant_id, category_id, product_id
+        message.bot,
+        chat_id,
+        msg_id,
+        db,
+        restaurant_id,
+        category_id,
+        product_id,
     )
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 @router.message(StateFilter(ProductFSM.edit_price))
@@ -333,23 +372,35 @@ async def edit_price_apply(message: Message, state: FSMContext, db: Database):
 
     data = await state.get_data()
     product_id = int(data["product_id"])
-
-    async with db.conn() as conn:
-        await conn.execute("UPDATE products SET price=? WHERE id=?", (price, product_id))
-        await conn.commit()
-    
-    data = await state.get_data()
     restaurant_id = int(data["restaurant_id"])
     category_id = int(data["category_id"])
     chat_id = int(data["origin_chat_id"])
     msg_id = int(data["origin_message_id"])
 
+    async with db.conn() as conn:
+        await conn.execute(
+            "UPDATE products SET price=? WHERE id=?",
+            (price, product_id),
+        )
+        await conn.commit()
+
     await state.clear()
 
     await render_product_card_edit(
-        message.bot, chat_id, msg_id, db,
-        restaurant_id, category_id, product_id
+        message.bot,
+        chat_id,
+        msg_id,
+        db,
+        restaurant_id,
+        category_id,
+        product_id,
     )
+
+    # необязательно, но чистит чат
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 
@@ -361,23 +412,34 @@ async def edit_desc_apply(message: Message, state: FSMContext, db: Database):
 
     data = await state.get_data()
     product_id = int(data["product_id"])
-
-    async with db.conn() as conn:
-        await conn.execute("UPDATE products SET description=? WHERE id=?", (desc, product_id))
-        await conn.commit()
-
-    data = await state.get_data()
     restaurant_id = int(data["restaurant_id"])
     category_id = int(data["category_id"])
     chat_id = int(data["origin_chat_id"])
     msg_id = int(data["origin_message_id"])
 
+    async with db.conn() as conn:
+        await conn.execute(
+            "UPDATE products SET description=? WHERE id=?",
+            (desc, product_id),
+        )
+        await conn.commit()
+
     await state.clear()
 
     await render_product_card_edit(
-        message.bot, chat_id, msg_id, db,
-        restaurant_id, category_id, product_id
+        message.bot,
+        chat_id,
+        msg_id,
+        db,
+        restaurant_id,
+        category_id,
+        product_id,
     )
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "r:cats")
@@ -479,12 +541,12 @@ async def cancel_fsm(cq: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("r:refresh:"))
 async def refresh_list(cq: CallbackQuery, db: Database):
-    # r:refresh:{restaurant_id}:{category_id}
     _, _, restaurant_id_str, category_id_str = cq.data.split(":", 3)
     restaurant_id = int(restaurant_id_str)
     category_id = int(category_id_str)
+
     await render_products_list(cq.message, db, restaurant_id, category_id)
-    await cq.answer("Обновлено")
+    await cq.answer("Ок")
 
 
 @router.callback_query(F.data.startswith("r:toggle:"))
