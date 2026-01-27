@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS products (
     shop_id INTEGER NOT NULL,
     category_id INTEGER NOT NULL,
     name TEXT NOT NULL,
+    local_name TEXT,
     description TEXT,
     price REAL NOT NULL,
     photo_url TEXT,

@@ -60,3 +60,4 @@ class Database:
         await add_column("products", "unit", "unit TEXT DEFAULT 'шт'")
         await add_column("products", "barcode", "barcode TEXT DEFAULT ''")
         await add_column("products", "updated_at", "updated_at DATETIME")
+        await add_column("products", "local_name", "local_name TEXT DEFAULT ''")

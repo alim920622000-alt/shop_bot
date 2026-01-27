@@ -7,13 +7,21 @@ class ProductsRepo:
     def __init__(self, db: Database):
         self.db = db
 
-    async def create(self, shop_id: int, category_id: int, name: str, price: float,
-                     description: str | None = None, photo_url: str | None = None) -> int:
+    async def create(
+        self,
+        shop_id: int,
+        category_id: int,
+        name: str,
+        price: float,
+        description: str | None = None,
+        photo_url: str | None = None,
+        local_name: str | None = None,
+    ) -> int:
         async with self.db.conn() as conn:
             cur = await conn.execute(
-                """INSERT INTO products (shop_id, category_id, name, description, price, photo_url)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (shop_id, category_id, name, description, price, photo_url),
+                """INSERT INTO products (shop_id, category_id, name, description, price, photo_url, local_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (shop_id, category_id, name, description, price, photo_url, local_name),
             )
             await conn.commit()
             return int(cur.lastrowid)
@@ -95,9 +103,13 @@ class ProductsRepo:
             q += " AND is_active=1"
 
         # пока простой LIKE по name/description (потом улучшим на name_norm/FTS)
-        q += " AND (lower(name) LIKE ? OR lower(COALESCE(description,'')) LIKE ?)"
+        q += (
+            " AND (lower(name) LIKE ?"
+            " OR lower(COALESCE(description,'')) LIKE ?"
+            " OR lower(COALESCE(local_name,'')) LIKE ?)"
+        )
         like = f"%{query.strip().lower()}%"
-        params.extend([like, like])
+        params.extend([like, like, like])
 
         q += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
