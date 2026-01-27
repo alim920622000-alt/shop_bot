@@ -3,7 +3,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from app.db.database import Database
-from app.handlers_admin_shop.utils import is_admin_for_shop
+from app.handlers_admin_shop.utils import is_shop_admin
 
 router = Router()
 
@@ -16,7 +16,7 @@ def kb_admin_main():
 
 @router.message(CommandStart())
 async def start_cmd(message: Message, db: Database):
-    if not await is_admin_for_shop(db, message.from_user.id):
+    if not await is_shop_admin(db, message.from_user.id):
         await message.answer("Нет доступа. Ваш user_id не назначен админом магазина.")
         return
 

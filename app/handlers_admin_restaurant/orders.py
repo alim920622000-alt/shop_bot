@@ -1,5 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from app.handlers_admin_restaurant.start import kb_admin_main  # добавь импорт
 
 from app.db.database import Database
 from app.handlers_admin_restaurant.utils import get_admin_restaurant_ids
@@ -124,5 +125,5 @@ async def set_status(cq: CallbackQuery, db: Database):
 
 @router.callback_query(F.data == "r:back:main")
 async def back_main(cq: CallbackQuery):
-    await cq.message.edit_text("Используйте /start для меню.")
+    await cq.message.edit_text("Админ-меню ресторана:", reply_markup=kb_admin_main())
     await cq.answer()

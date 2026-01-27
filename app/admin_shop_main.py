@@ -20,8 +20,10 @@ async def main():
 
     bot = Bot(token=token)
     dp = Dispatcher(storage=MemoryStorage())
+   
     dp["db"] = db
 
+   
     dp.include_router(start_router)
     dp.include_router(orders_router)
 

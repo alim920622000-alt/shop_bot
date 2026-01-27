@@ -3,7 +3,7 @@ from app.db.database import Database
 
 async def get_admin_shop_ids(db: Database, user_id: int) -> list[int]:
     """
-    Г‚Г®Г§ГўГ°Г Г№Г ГҐГІ ГІГ®Г«ГјГЄГ® ГІГҐ shop_id, ГЄГ®ГІГ®Г°Г»ГҐ ГїГўГ«ГїГѕГІГ±Гї Г¬Г ГЈГ Г§ГЁГ­Г Г¬ГЁ (shop).
+    Возвращает только те shop_id, которые являются магазинами (shop).
     """
     async with db.conn() as conn:
         cur = await conn.execute(
