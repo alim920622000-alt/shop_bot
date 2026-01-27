@@ -2,10 +2,13 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+from io import BytesIO
+from openpyxl import load_workbook
 
 from app.db.database import Database
 from app.handlers_admin_shop.utils import get_admin_shop_ids, is_shop_admin
 from app.handlers_admin_shop.start import kb_admin_main
+from app.repositories.categories_repo import CategoriesRepo
 from app.repositories.products_repo import ProductsRepo
 
 router = Router()
@@ -14,6 +17,7 @@ router = Router()
 class ProductStates(StatesGroup):
     add_category = State()
     add_product = State()
+    bulk_import = State()
 
 
 def kb_home() -> InlineKeyboardMarkup:
@@ -31,6 +35,7 @@ def kb_categories(cats: list[dict]) -> InlineKeyboardMarkup:
             callback_data=f"a:pcat:{c['id']}"
         )])
 
+    kb.append([InlineKeyboardButton(text="📥 Импорт из Excel", callback_data="a:pimport")])
     kb.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="a:paddcat")])
     kb.append([InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -92,6 +97,7 @@ async def products_root(cq: CallbackQuery, db: Database):
         await cq.message.edit_text(
             "🧺 Продукты\n\nКатегорий пока нет.\nНажми «➕ Добавить категорию».",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📥 Импорт из Excel", callback_data="a:pimport")],
                 [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="a:paddcat")],
                 [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")],
             ])
@@ -218,6 +224,179 @@ async def add_product_save(message: Message, state: FSMContext, db: Database):
 
     await state.clear()
     await message.answer("Товар добавлен ✅", reply_markup=kb_admin_main())
+
+
+def _normalize_header(value: str | None) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+@router.callback_query(F.data == "a:pimport")
+async def import_products_prompt(cq: CallbackQuery, state: FSMContext, db: Database):
+    if not await is_shop_admin(db, cq.from_user.id):
+        await cq.answer("Нет доступа", show_alert=True)
+        return
+
+    await state.set_state(ProductStates.bulk_import)
+    await cq.message.edit_text(
+        "📥 Импорт товаров из Excel\n\n"
+        "Пришлите файл .xlsx со столбцами:\n"
+        "Категория | Название | Цена | Local_name/Err_name (опционально) | Описание (опционально)\n\n"
+        "Категория может быть названием или ID.\n"
+        "Пример заголовков: category, name, price, local_name, description.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")],
+        ]),
+    )
+    await cq.answer()
+
+
+@router.message(ProductStates.bulk_import, F.document)
+async def import_products_from_excel(message: Message, state: FSMContext, db: Database):
+    if not await is_shop_admin(db, message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+
+    shop_id = await _get_shop_id_for_admin(db, message.from_user.id)
+    if not shop_id:
+        await message.answer("Нет привязанного магазина.", reply_markup=kb_admin_main())
+        await state.clear()
+        return
+
+    document = message.document
+    if not document or not document.file_name.lower().endswith(".xlsx"):
+        await message.answer("Нужен файл .xlsx. Попробуйте ещё раз.")
+        return
+
+    file = await message.bot.get_file(document.file_id)
+    buffer = BytesIO()
+    await message.bot.download_file(file.file_path, destination=buffer)
+    buffer.seek(0)
+
+    workbook = load_workbook(buffer, data_only=True)
+    sheet = workbook.active
+
+    header_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    if not header_row:
+        await message.answer("Файл пустой или без заголовков.")
+        return
+
+    headers = [_normalize_header(value) for value in header_row]
+
+    def find_col(options: set[str]) -> int | None:
+        for idx, header in enumerate(headers):
+            if header in options:
+                return idx
+        return None
+
+    category_idx = find_col({"category", "категория", "категории"})
+    name_idx = find_col({"name", "название", "товар"})
+    price_idx = find_col({"price", "цена", "стоимость"})
+    local_name_idx = find_col({"local_name", "local", "err_name", "локальное название", "локальное имя"})
+    description_idx = find_col({"description", "описание"})
+
+    if category_idx is None or name_idx is None or price_idx is None:
+        await message.answer(
+            "Не найден один из обязательных столбцов: категория, название, цена."
+        )
+        return
+
+    async with db.conn() as conn:
+        cur = await conn.execute(
+            "SELECT id, name FROM categories WHERE shop_id=?",
+            (shop_id,),
+        )
+        rows = await cur.fetchall()
+
+    categories_by_name = {row["name"].strip().lower(): row["id"] for row in rows}
+    categories_by_id = {int(row["id"]) for row in rows}
+    categories_repo = CategoriesRepo(db)
+    products_repo = ProductsRepo(db)
+
+    created = 0
+    created_categories = 0
+    errors: list[str] = []
+
+    for row_index, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        if not row or all(cell is None or str(cell).strip() == "" for cell in row):
+            continue
+
+        category_cell = row[category_idx] if category_idx < len(row) else None
+        name_cell = row[name_idx] if name_idx < len(row) else None
+        price_cell = row[price_idx] if price_idx < len(row) else None
+        local_name_cell = row[local_name_idx] if local_name_idx is not None and local_name_idx < len(row) else None
+        description_cell = row[description_idx] if description_idx is not None and description_idx < len(row) else None
+
+        if category_cell is None or str(category_cell).strip() == "":
+            errors.append(f"Строка {row_index}: нет категории")
+            continue
+
+        category_id: int | None = None
+        category_raw = str(category_cell).strip()
+        if category_raw.isdigit():
+            candidate_id = int(category_raw)
+            if candidate_id in categories_by_id:
+                category_id = candidate_id
+            else:
+                errors.append(f"Строка {row_index}: категория ID {candidate_id} не найдена")
+                continue
+        else:
+            normalized = category_raw.lower()
+            category_id = categories_by_name.get(normalized)
+            if category_id is None:
+                category_id = await categories_repo.create(shop_id=shop_id, name=category_raw)
+                categories_by_name[normalized] = category_id
+                categories_by_id.add(category_id)
+                created_categories += 1
+
+        if name_cell is None or str(name_cell).strip() == "":
+            errors.append(f"Строка {row_index}: нет названия")
+            continue
+
+        name = str(name_cell).strip()
+        local_name = str(local_name_cell).strip() if local_name_cell is not None else None
+        description = str(description_cell).strip() if description_cell is not None else None
+
+        if price_cell is None or str(price_cell).strip() == "":
+            errors.append(f"Строка {row_index}: нет цены")
+            continue
+
+        try:
+            price = float(str(price_cell).replace(",", "."))
+        except ValueError:
+            errors.append(f"Строка {row_index}: цена не число")
+            continue
+
+        await products_repo.create(
+            shop_id=shop_id,
+            category_id=category_id,
+            name=name,
+            price=price,
+            description=description,
+            local_name=local_name if local_name else None,
+        )
+        created += 1
+
+    await state.clear()
+    error_text = ""
+    if errors:
+        preview = "\n".join(errors[:10])
+        suffix = "\n... и ещё ошибки." if len(errors) > 10 else ""
+        error_text = f"\n\nОшибки:\n{preview}{suffix}"
+
+    await message.answer(
+        f"Импорт завершён ✅\n"
+        f"Добавлено товаров: {created}\n"
+        f"Создано категорий: {created_categories}"
+        f"{error_text}",
+        reply_markup=kb_admin_main(),
+    )
+
+
+@router.message(ProductStates.bulk_import)
+async def import_products_wrong_message(message: Message):
+    await message.answer("Пришлите файл .xlsx для импорта товаров.")
 
 
 @router.callback_query(F.data.startswith("a:pprod:"))
