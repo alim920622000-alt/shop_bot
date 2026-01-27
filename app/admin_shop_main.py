@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from app.db.database import Database, DBConfig
 from app.handlers_admin_shop.start import router as start_router
 from app.handlers_admin_shop.orders import router as orders_router
+from app.handlers_admin_shop.extra import router as extra_router
 
 
 async def main():
@@ -25,6 +26,7 @@ async def main():
 
    
     dp.include_router(start_router)
+    dp.include_router(extra_router)   # ? новый
     dp.include_router(orders_router)
 
     await dp.start_polling(bot)
