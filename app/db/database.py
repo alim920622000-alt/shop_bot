@@ -36,4 +36,27 @@ class Database:
         sql = Path(schema_path).read_text(encoding="utf-8")
         async with self.conn() as connection:
             await connection.executescript(sql)
+            # ✅ ДОБАВЬ ЭТО:
+            await self._migrate(connection)
+
             await connection.commit()
+    
+    async def _migrate(self, connection: aiosqlite.Connection) -> None:
+        async def has_column(table: str, col: str) -> bool:
+            cur = await connection.execute(f"PRAGMA table_info({table})")
+            rows = await cur.fetchall()
+            return any(r["name"] == col for r in rows)
+
+        async def add_column(table: str, col: str, ddl: str) -> None:
+            if not await has_column(table, col):
+                await connection.execute(f"ALTER TABLE {table} ADD COLUMN {ddl};")
+
+        # categories: нормализованное имя для поиска/дедупликации
+        await add_column("categories", "name_norm", "name_norm TEXT DEFAULT ''")
+
+        # products: поля под поиск и импорт
+        await add_column("products", "name_norm", "name_norm TEXT DEFAULT ''")
+        await add_column("products", "keywords_norm", "keywords_norm TEXT DEFAULT ''")
+        await add_column("products", "unit", "unit TEXT DEFAULT 'шт'")
+        await add_column("products", "barcode", "barcode TEXT DEFAULT ''")
+        await add_column("products", "updated_at", "updated_at DATETIME")

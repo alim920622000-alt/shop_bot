@@ -8,6 +8,7 @@ from app.db.database import Database, DBConfig
 from app.handlers_admin_shop.start import router as start_router
 from app.handlers_admin_shop.orders import router as orders_router
 from app.handlers_admin_shop.extra import router as extra_router
+from app.handlers_admin_shop.products import router as products_router
 
 
 async def main():
@@ -26,6 +27,7 @@ async def main():
 
    
     dp.include_router(start_router)
+    dp.include_router(products_router)
     dp.include_router(extra_router)   # ? новый
     dp.include_router(orders_router)
 
