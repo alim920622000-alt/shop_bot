@@ -10,6 +10,7 @@ from app.db.database import Database
 from app.handlers_admin_restaurant.utils import get_admin_restaurant_ids
 from app.repositories.categories_repo import CategoriesRepo
 from app.repositories.products_repo import ProductsRepo
+from app.utils import build_keywords, normalize
 
 router = Router()
 class ProductFSM(StatesGroup):
@@ -231,12 +232,14 @@ async def add_product_desc(message: Message, state: FSMContext, db: Database):
 
     # сохраняем позицию
     async with db.conn() as conn:
+        name_norm = normalize(name)
+        keywords_norm = build_keywords(name, desc)
         await conn.execute(
             """
-            INSERT INTO products (shop_id, category_id, name, description, price, is_active)
-            VALUES (?, ?, ?, ?, ?, 1)
+            INSERT INTO products (shop_id, category_id, name, name_norm, keywords_norm, description, price, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             """,
-            (restaurant_id, category_id, name, desc, price),
+            (restaurant_id, category_id, name, name_norm, keywords_norm, desc, price),
         )
         await conn.commit()
 
@@ -335,9 +338,12 @@ async def edit_name_apply(message: Message, state: FSMContext, db: Database):
     msg_id = int(data["origin_message_id"])
 
     async with db.conn() as conn:
+        cur = await conn.execute("SELECT description FROM products WHERE id=?", (product_id,))
+        row = await cur.fetchone()
+        description = row["description"] if row else ""
         await conn.execute(
-            "UPDATE products SET name=? WHERE id=?",
-            (name, product_id),
+            "UPDATE products SET name=?, name_norm=?, keywords_norm=? WHERE id=?",
+            (name, normalize(name), build_keywords(name, description), product_id),
         )
         await conn.commit()
 
@@ -418,9 +424,12 @@ async def edit_desc_apply(message: Message, state: FSMContext, db: Database):
     msg_id = int(data["origin_message_id"])
 
     async with db.conn() as conn:
+        cur = await conn.execute("SELECT name FROM products WHERE id=?", (product_id,))
+        row = await cur.fetchone()
+        name = row["name"] if row else ""
         await conn.execute(
-            "UPDATE products SET description=? WHERE id=?",
-            (desc, product_id),
+            "UPDATE products SET description=?, keywords_norm=? WHERE id=?",
+            (desc, build_keywords(name, desc), product_id),
         )
         await conn.commit()
 

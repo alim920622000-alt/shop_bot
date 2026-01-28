@@ -11,7 +11,11 @@ router = Router()
 def kb_admin_main() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🍽 Заказы", callback_data="r:orders")],
-        [InlineKeyboardButton(text="🧾 Позиции", callback_data="r:cats")],
+        [InlineKeyboardButton(text="🧾 Меню", callback_data="r:cats")],
+        [InlineKeyboardButton(text="🕓 История", callback_data="r:history")],
+        [InlineKeyboardButton(text="🎁 Акции", callback_data="r:promos")],
+        [InlineKeyboardButton(text="👤 Кабинет", callback_data="r:cabinet")],
+        [InlineKeyboardButton(text="💬 Чат", callback_data="r:chat")],
     ])
 
 

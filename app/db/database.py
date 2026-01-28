@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
 
+from app.utils import build_keywords, normalize
+
 
 @dataclass(frozen=True)
 class DBConfig:
@@ -60,3 +62,98 @@ class Database:
         await add_column("products", "unit", "unit TEXT DEFAULT 'шт'")
         await add_column("products", "barcode", "barcode TEXT DEFAULT ''")
         await add_column("products", "updated_at", "updated_at DATETIME")
+
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS search_synonyms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shop_id INTEGER,
+                business_type TEXT CHECK (business_type IN ('shop','restaurant')),
+                term TEXT NOT NULL,
+                synonym TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+            );
+            """
+        )
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS promotions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shop_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+            );
+            """
+        )
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS promotion_items (
+                promo_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                PRIMARY KEY (promo_id, product_id),
+                FOREIGN KEY (promo_id) REFERENCES promotions(id) ON DELETE CASCADE,
+                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+            );
+            """
+        )
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                sender_role TEXT NOT NULL,
+                sender_user_id INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+            );
+            """
+        )
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS client_profiles (
+                user_id INTEGER PRIMARY KEY,
+                full_name TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                address TEXT DEFAULT '',
+                updated_at DATETIME
+            );
+            """
+        )
+
+        await connection.execute("CREATE INDEX IF NOT EXISTS idx_products_name_norm ON products(name_norm);")
+        await connection.execute("CREATE INDEX IF NOT EXISTS idx_products_keywords_norm ON products(keywords_norm);")
+        await connection.execute("CREATE INDEX IF NOT EXISTS idx_search_synonyms_term ON search_synonyms(term);")
+        await connection.execute("CREATE INDEX IF NOT EXISTS idx_search_synonyms_shop ON search_synonyms(shop_id);")
+        await connection.execute("CREATE INDEX IF NOT EXISTS idx_promotions_shop ON promotions(shop_id);")
+        await connection.execute("CREATE INDEX IF NOT EXISTS idx_promo_items_promo ON promotion_items(promo_id);")
+        await connection.execute("CREATE INDEX IF NOT EXISTS idx_order_chat_order ON order_chat_messages(order_id);")
+
+        cur = await connection.execute(
+            "SELECT id, name, description, name_norm, keywords_norm FROM products"
+        )
+        rows = await cur.fetchall()
+        for row in rows:
+            if row["name_norm"] and row["keywords_norm"]:
+                continue
+            name_norm = normalize(row["name"] or "")
+            keywords_norm = build_keywords(row["name"] or "", row["description"] or "")
+            await connection.execute(
+                "UPDATE products SET name_norm=?, keywords_norm=? WHERE id=?",
+                (name_norm, keywords_norm, row["id"]),
+            )
+
+        cur = await connection.execute("SELECT id, name, name_norm FROM categories")
+        rows = await cur.fetchall()
+        for row in rows:
+            if row["name_norm"]:
+                continue
+            name_norm = normalize(row["name"] or "")
+            await connection.execute(
+                "UPDATE categories SET name_norm=? WHERE id=?",
+                (name_norm, row["id"]),
+            )

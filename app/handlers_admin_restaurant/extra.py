@@ -4,8 +4,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from app.db.database import Database
-from app.handlers_admin_shop.start import kb_admin_main
-from app.handlers_admin_shop.utils import is_shop_admin, get_admin_shop_ids
+from app.handlers_admin_restaurant.utils import is_restaurant_admin, get_admin_restaurant_ids
+from app.handlers_admin_restaurant.start import kb_admin_main
 from app.repositories.orders_repo import OrdersRepo
 from app.repositories.promotions_repo import PromotionsRepo
 from app.repositories.products_repo import ProductsRepo
@@ -22,45 +22,45 @@ class PromoStates(StatesGroup):
 
 def kb_back_home() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")]
+        [InlineKeyboardButton(text="🏠 Главная", callback_data="r:home")]
     ])
 
 
 def kb_back_promos() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="a:promos")],
-        [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="r:promos")],
+        [InlineKeyboardButton(text="🏠 Главная", callback_data="r:home")],
     ])
 
 
 def kb_history_list(order_ids: list[int]) -> InlineKeyboardMarkup:
     kb = []
     for oid in order_ids:
-        kb.append([InlineKeyboardButton(text=f"Заказ #{oid}", callback_data=f"a:history_order:{oid}")])
-    kb.append([InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")])
+        kb.append([InlineKeyboardButton(text=f"Заказ #{oid}", callback_data=f"r:history_order:{oid}")])
+    kb.append([InlineKeyboardButton(text="🏠 Главная", callback_data="r:home")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def kb_history_card() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="a:history")],
-        [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="r:history")],
+        [InlineKeyboardButton(text="🏠 Главная", callback_data="r:home")],
     ])
 
 
 def kb_promos_list(promos: list[dict]) -> InlineKeyboardMarkup:
     kb = []
     for promo in promos:
-        kb.append([InlineKeyboardButton(text=promo["name"], callback_data=f"a:promo:{promo['id']}")])
-    kb.append([InlineKeyboardButton(text="➕ Добавить акцию", callback_data="a:promo_add")])
-    kb.append([InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")])
+        kb.append([InlineKeyboardButton(text=promo["name"], callback_data=f"r:promo:{promo['id']}")])
+    kb.append([InlineKeyboardButton(text="➕ Добавить акцию", callback_data="r:promo_add")])
+    kb.append([InlineKeyboardButton(text="🏠 Главная", callback_data="r:home")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def kb_promo_card(promo_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📌 Выбрать позиции", callback_data=f"a:promo_pick:{promo_id}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="a:promos")],
+        [InlineKeyboardButton(text="📌 Выбрать позиции", callback_data=f"r:promo_pick:{promo_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="r:promos")],
     ])
 
 
@@ -69,9 +69,9 @@ def kb_promo_categories(promo_id: int, categories: list[dict]) -> InlineKeyboard
     for cat in categories:
         kb.append([InlineKeyboardButton(
             text=cat["name"],
-            callback_data=f"a:promo_cat:{promo_id}:{cat['id']}",
+            callback_data=f"r:promo_cat:{promo_id}:{cat['id']}",
         )])
-    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"a:promo:{promo_id}")])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"r:promo:{promo_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -81,33 +81,33 @@ def kb_promo_products(promo_id: int, category_id: int, products: list[dict], cho
         mark = "✅" if int(p["id"]) in chosen_ids else "➕"
         kb.append([InlineKeyboardButton(
             text=f"{mark} {p['name']} — {p['price']}",
-            callback_data=f"a:promo_toggle:{promo_id}:{category_id}:{p['id']}",
+            callback_data=f"r:promo_toggle:{promo_id}:{category_id}:{p['id']}",
         )])
-    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"a:promo_pick:{promo_id}")])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"r:promo_pick:{promo_id}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 async def _guard_admin(db: Database, user_id: int) -> bool:
-    return await is_shop_admin(db, user_id)
+    return await is_restaurant_admin(db, user_id)
 
 
-async def _get_shop_id(db: Database, user_id: int) -> int | None:
-    shop_ids = await get_admin_shop_ids(db, user_id)
-    return shop_ids[0] if shop_ids else None
+async def _get_restaurant_id(db: Database, user_id: int) -> int | None:
+    ids = await get_admin_restaurant_ids(db, user_id)
+    return ids[0] if ids else None
 
 
-@router.callback_query(F.data == "a:history")
+@router.callback_query(F.data == "r:history")
 async def history(cq: CallbackQuery, db: Database):
     if not await _guard_admin(db, cq.from_user.id):
         await cq.answer("Нет доступа", show_alert=True)
         return
-    shop_id = await _get_shop_id(db, cq.from_user.id)
-    if not shop_id:
-        await cq.message.edit_text("Нет привязанного магазина.", reply_markup=kb_back_home())
+    restaurant_id = await _get_restaurant_id(db, cq.from_user.id)
+    if not restaurant_id:
+        await cq.message.edit_text("Нет привязанного ресторана.", reply_markup=kb_back_home())
         await cq.answer()
         return
     orders = OrdersRepo(db)
-    rows = await orders.list_history_for_shop(shop_id, statuses=["ready", "canceled", "finished", "delivered"])
+    rows = await orders.list_history_for_shop(restaurant_id, statuses=["finished", "canceled"])
     if not rows:
         await cq.message.edit_text("История заказов пуста.", reply_markup=kb_back_home())
         await cq.answer()
@@ -117,7 +117,7 @@ async def history(cq: CallbackQuery, db: Database):
     await cq.answer()
 
 
-@router.callback_query(F.data.startswith("a:history_order:"))
+@router.callback_query(F.data.startswith("r:history_order:"))
 async def history_order_card(cq: CallbackQuery, db: Database):
     order_id = int(cq.data.split(":")[2])
     orders = OrdersRepo(db)
@@ -134,18 +134,18 @@ async def history_order_card(cq: CallbackQuery, db: Database):
     await cq.answer()
 
 
-@router.callback_query(F.data == "a:promos")
+@router.callback_query(F.data == "r:promos")
 async def promos(cq: CallbackQuery, db: Database):
     if not await _guard_admin(db, cq.from_user.id):
         await cq.answer("Нет доступа", show_alert=True)
         return
-    shop_id = await _get_shop_id(db, cq.from_user.id)
-    if not shop_id:
-        await cq.message.edit_text("Нет привязанного магазина.", reply_markup=kb_back_home())
+    restaurant_id = await _get_restaurant_id(db, cq.from_user.id)
+    if not restaurant_id:
+        await cq.message.edit_text("Нет привязанного ресторана.", reply_markup=kb_back_home())
         await cq.answer()
         return
     repo = PromotionsRepo(db)
-    promos_list = await repo.list_for_shop(shop_id)
+    promos_list = await repo.list_for_shop(restaurant_id)
     if not promos_list:
         await cq.message.edit_text("Акций пока нет.", reply_markup=kb_promos_list([]))
         await cq.answer()
@@ -154,7 +154,7 @@ async def promos(cq: CallbackQuery, db: Database):
     await cq.answer()
 
 
-@router.callback_query(F.data == "a:promo_add")
+@router.callback_query(F.data == "r:promo_add")
 async def promo_add_start(cq: CallbackQuery, state: FSMContext):
     await state.set_state(PromoStates.add_name)
     await cq.message.edit_text("Введите название акции:", reply_markup=kb_back_home())
@@ -174,7 +174,7 @@ async def promo_add_name(message: Message, state: FSMContext):
 
 @router.message(PromoStates.add_desc)
 async def promo_add_desc(message: Message, state: FSMContext, db: Database):
-    if not await is_shop_admin(db, message.from_user.id):
+    if not await is_restaurant_admin(db, message.from_user.id):
         await message.answer("Нет доступа.")
         return
     desc = (message.text or "").strip()
@@ -182,18 +182,18 @@ async def promo_add_desc(message: Message, state: FSMContext, db: Database):
         desc = ""
     data = await state.get_data()
     name = data.get("name", "")
-    shop_id = await _get_shop_id(db, message.from_user.id)
-    if not shop_id:
-        await message.answer("Нет привязанного магазина.", reply_markup=kb_admin_main())
+    restaurant_id = await _get_restaurant_id(db, message.from_user.id)
+    if not restaurant_id:
+        await message.answer("Нет привязанного ресторана.", reply_markup=kb_admin_main())
         await state.clear()
         return
     repo = PromotionsRepo(db)
-    await repo.create(shop_id, name, desc)
+    await repo.create(restaurant_id, name, desc)
     await state.clear()
     await message.answer("Акция создана ✅", reply_markup=kb_admin_main())
 
 
-@router.callback_query(F.data.startswith("a:promo:"))
+@router.callback_query(F.data.startswith("r:promo:"))
 async def promo_card(cq: CallbackQuery, db: Database):
     promo_id = int(cq.data.split(":")[2])
     repo = PromotionsRepo(db)
@@ -212,16 +212,16 @@ async def promo_card(cq: CallbackQuery, db: Database):
     await cq.answer()
 
 
-@router.callback_query(F.data.startswith("a:promo_pick:"))
+@router.callback_query(F.data.startswith("r:promo_pick:"))
 async def promo_pick_category(cq: CallbackQuery, db: Database):
     promo_id = int(cq.data.split(":")[2])
-    shop_id = await _get_shop_id(db, cq.from_user.id)
-    if not shop_id:
-        await cq.message.edit_text("Нет привязанного магазина.", reply_markup=kb_back_home())
+    restaurant_id = await _get_restaurant_id(db, cq.from_user.id)
+    if not restaurant_id:
+        await cq.message.edit_text("Нет привязанного ресторана.", reply_markup=kb_back_home())
         await cq.answer()
         return
     cats = CategoriesRepo(db)
-    categories = await cats.list_for_shop(shop_id, active_only=True)
+    categories = await cats.list_for_shop(restaurant_id, active_only=True)
     if not categories:
         await cq.message.edit_text("Категорий пока нет.", reply_markup=kb_back_promos())
         await cq.answer()
@@ -230,7 +230,7 @@ async def promo_pick_category(cq: CallbackQuery, db: Database):
     await cq.answer()
 
 
-@router.callback_query(F.data.startswith("a:promo_cat:"))
+@router.callback_query(F.data.startswith("r:promo_cat:"))
 async def promo_pick_product(cq: CallbackQuery, db: Database):
     _, _, promo_id_str, category_id_str = cq.data.split(":", 3)
     promo_id = int(promo_id_str)
@@ -247,7 +247,7 @@ async def promo_pick_product(cq: CallbackQuery, db: Database):
     await cq.answer()
 
 
-@router.callback_query(F.data.startswith("a:promo_toggle:"))
+@router.callback_query(F.data.startswith("r:promo_toggle:"))
 async def promo_toggle_product(cq: CallbackQuery, db: Database):
     _, _, promo_id_str, category_id_str, product_id_str = cq.data.split(":", 4)
     promo_id = int(promo_id_str)
@@ -258,24 +258,24 @@ async def promo_toggle_product(cq: CallbackQuery, db: Database):
     await promo_pick_product(cq, db)
 
 
-@router.callback_query(F.data == "a:cabinet")
+@router.callback_query(F.data == "r:cabinet")
 async def cabinet(cq: CallbackQuery, db: Database):
     if not await _guard_admin(db, cq.from_user.id):
         await cq.answer("Нет доступа", show_alert=True)
         return
-    shop_id = await _get_shop_id(db, cq.from_user.id)
-    if not shop_id:
-        await cq.message.edit_text("Нет привязанного магазина.", reply_markup=kb_back_home())
+    restaurant_id = await _get_restaurant_id(db, cq.from_user.id)
+    if not restaurant_id:
+        await cq.message.edit_text("Нет привязанного ресторана.", reply_markup=kb_back_home())
         await cq.answer()
         return
     repo = ShopsRepo(db)
-    shop = await repo.get(shop_id)
+    shop = await repo.get(restaurant_id)
     if not shop:
-        await cq.message.edit_text("Магазин не найден.", reply_markup=kb_back_home())
+        await cq.message.edit_text("Ресторан не найден.", reply_markup=kb_back_home())
         await cq.answer()
         return
     text = (
-        "👤 Кабинет магазина (только просмотр)\n"
+        "👤 Кабинет ресторана (только просмотр)\n"
         f"Телефон: {shop.get('phone') or '—'}\n"
         f"Адрес: {shop.get('address') or '—'}\n"
         f"Лого: {shop.get('logo_url') or '—'}\n"

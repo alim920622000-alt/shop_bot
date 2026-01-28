@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Optional, Sequence
 from app.db.database import Database
+from app.utils import build_keywords, normalize
 
 
 class ProductsRepo:
@@ -9,11 +10,13 @@ class ProductsRepo:
 
     async def create(self, shop_id: int, category_id: int, name: str, price: float,
                      description: str | None = None, photo_url: str | None = None) -> int:
+        name_norm = normalize(name)
+        keywords_norm = build_keywords(name, description)
         async with self.db.conn() as conn:
             cur = await conn.execute(
-                """INSERT INTO products (shop_id, category_id, name, description, price, photo_url)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (shop_id, category_id, name, description, price, photo_url),
+                """INSERT INTO products (shop_id, category_id, name, name_norm, keywords_norm, description, price, photo_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (shop_id, category_id, name, name_norm, keywords_norm, description, price, photo_url),
             )
             await conn.commit()
             return int(cur.lastrowid)
@@ -22,10 +25,18 @@ class ProductsRepo:
                      price: float | None = None, is_active: bool | None = None) -> None:
         fields = []
         params = []
+        existing = None
         if name is not None:
             fields.append("name=?"); params.append(name)
+            fields.append("name_norm=?"); params.append(normalize(name))
         if description is not None:
             fields.append("description=?"); params.append(description)
+        if name is not None or description is not None:
+            if existing is None:
+                existing = await self.get(product_id)
+            existing_name = name if name is not None else (existing["name"] if existing else "")
+            existing_desc = description if description is not None else (existing.get("description") if existing else "")
+            fields.append("keywords_norm=?"); params.append(build_keywords(existing_name or "", existing_desc or ""))
         if price is not None:
             fields.append("price=?"); params.append(price)
         if is_active is not None:
