@@ -1,0 +1,367 @@
+diff --git a/README.md b/README.md
+index 574829f89c2478898b30aef8fc3170cd9bce3e2c..c6e18337d0e8f3d0e1e13cbbb3b59ea28c4eb4b0 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,10 @@
+-# agregate-bot
+\ No newline at end of file
++# agregate-bot
++
++## Импорт товаров (админ-бот магазина)
++
++1. В админ-боте: **Товары → категория → “Массовое добавление”**.
++2. Отправьте CSV-файл документом. Формат строки:
++   `Название; Цена; Описание (опционально)`.
++3. Проверьте предпросмотр и нажмите **«Импортировать»**.
++
++Пример файла: [`samples/products_import_sample.csv`](samples/products_import_sample.csv).
+diff --git a/app/handlers_admin_shop/products.py b/app/handlers_admin_shop/products.py
+index 673e542ae80f5f21dcd881222cb2fcc02f347006..0862ca5336d373bbe7cf081c12fe0b14de106b18 100644
+--- a/app/handlers_admin_shop/products.py
++++ b/app/handlers_admin_shop/products.py
+@@ -1,38 +1,41 @@
++import logging
++
+ from aiogram import Router, F
+ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+ from aiogram.fsm.state import State, StatesGroup
+ from aiogram.fsm.context import FSMContext
+ 
+ from app.db.database import Database
+ from app.handlers_admin_shop.utils import get_admin_shop_ids, is_shop_admin
+ from app.handlers_admin_shop.start import kb_admin_main
+ from app.repositories.products_repo import ProductsRepo
+ from app.services.search_service import SearchService
+ from app.services.search_utils import normalize_text
+ 
+ router = Router()
++logger = logging.getLogger(__name__)
+ 
+ 
+ class ProductStates(StatesGroup):
+     add_category = State()
+     add_product = State()
+     search = State()
+     bulk_import = State()
+ 
+ 
+ def kb_home() -> InlineKeyboardMarkup:
+     return InlineKeyboardMarkup(inline_keyboard=[
+         [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")]
+     ])
+ 
+ 
+ def kb_categories(cats: list[dict]) -> InlineKeyboardMarkup:
+     kb = []
+     for c in cats:
+         status = "✅" if int(c["is_active"]) == 1 else "⛔"
+         kb.append([InlineKeyboardButton(
+             text=f"{status} {c['name']}",
+             callback_data=f"a:pcat:{c['id']}"
+         )])
+ 
+     kb.append([InlineKeyboardButton(text="🔎 Поиск по товарам", callback_data="a:psearch")])
+@@ -66,50 +69,59 @@ def kb_product_card(cat_id: int, product_id: int, is_active: int) -> InlineKeybo
+         [
+             InlineKeyboardButton(text="🔙 Назад", callback_data=f"a:pcat:{cat_id}"),
+             InlineKeyboardButton(text="🏠 Главная", callback_data="a:home"),
+         ],
+     ])
+ 
+ 
+ def kb_search_results(items: list[dict]) -> InlineKeyboardMarkup:
+     kb = []
+     for p in items:
+         kb.append([InlineKeyboardButton(
+             text=f"{p['name']} — {p['price']}",
+             callback_data=f"a:pprod:{p['category_id']}:{p['id']}"
+         )])
+     kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="a:products")])
+     return InlineKeyboardMarkup(inline_keyboard=kb)
+ 
+ 
+ def kb_bulk_confirm() -> InlineKeyboardMarkup:
+     return InlineKeyboardMarkup(inline_keyboard=[
+         [InlineKeyboardButton(text="✅ Импортировать", callback_data="a:bulk:confirm")],
+         [InlineKeyboardButton(text="❌ Отмена", callback_data="a:bulk:cancel")],
+     ])
+ 
+ 
++def bulk_format_hint() -> str:
++    return (
++        "Ожидаемый формат:\n"
++        "Название; Цена; Описание (опционально)\n"
++        "Пример:\n"
++        "Банан; 12.5; Спелый банан"
++    )
++
++
+ async def _get_shop_id_for_admin(db: Database, user_id: int) -> int | None:
+     shop_ids = await get_admin_shop_ids(db, user_id)
+     return shop_ids[0] if shop_ids else None
+ 
+ 
+ @router.callback_query(F.data == "a:products")
+ async def products_root(cq: CallbackQuery, db: Database):
+     if not await is_shop_admin(db, cq.from_user.id):
+         await cq.answer("Нет доступа", show_alert=True)
+         return
+ 
+     shop_id = await _get_shop_id_for_admin(db, cq.from_user.id)
+     if not shop_id:
+         await cq.message.edit_text("Нет привязанного магазина.", reply_markup=kb_home())
+         await cq.answer()
+         return
+ 
+     async with db.conn() as conn:
+         cur = await conn.execute(
+             "SELECT id, name, sort, is_active FROM categories WHERE shop_id=? ORDER BY sort, id",
+             (shop_id,),
+         )
+         cats = [dict(r) for r in await cur.fetchall()]
+ 
+     if not cats:
+@@ -329,133 +341,199 @@ async def search_products(message: Message, state: FSMContext, db: Database):
+     query = (message.text or "").strip()
+     if not query:
+         await message.answer("Введите текст для поиска.")
+         return
+ 
+     data = await state.get_data()
+     shop_id = int(data.get("search_shop_id") or 0)
+ 
+     service = SearchService(db)
+     results = await service.search_products(shop_id=shop_id, query=query, active_only=False)
+     if not results:
+         await message.answer("Ничего не найдено.")
+         return
+ 
+     products = [r.product for r in results]
+     await message.answer("Результаты поиска:", reply_markup=kb_search_results(products))
+ 
+ 
+ @router.callback_query(F.data.startswith("a:bulk:"))
+ async def bulk_import_prompt(cq: CallbackQuery, state: FSMContext, db: Database):
+     if not await is_shop_admin(db, cq.from_user.id):
+         await cq.answer("Нет доступа", show_alert=True)
+         return
+ 
+     parts = cq.data.split(":")
+-    if len(parts) == 3:
+-        cat_id = int(parts[2])
+-        await state.set_state(ProductStates.bulk_import)
+-        await state.update_data(category_id=cat_id)
+-        await cq.message.edit_text(
+-            "Загрузите CSV файл с товарами.\n"
+-            "Формат строк: Название; Цена; Описание (опционально).",
+-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+-                [InlineKeyboardButton(text="🔙 Назад", callback_data=f"a:pcat:{cat_id}")],
+-                [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")],
+-            ]),
+-        )
+-        await cq.answer()
+-        return
+-
+-    action = parts[2]
++    action = parts[2] if len(parts) > 2 else ""
+     if action == "confirm":
++        logger.info("Bulk import confirm pressed by admin %s", cq.from_user.id)
+         data = await state.get_data()
+         items = data.get("bulk_items") or []
++        errors = data.get("bulk_errors") or []
+         cat_id = int(data.get("category_id") or 0)
+         shop_id = await _get_shop_id_for_admin(db, cq.from_user.id)
++        if data.get("bulk_import_started"):
++            await cq.answer("Импорт уже запускается.", show_alert=True)
++            return
+         if not items or not cat_id or not shop_id:
+             await cq.message.edit_text("Нет данных для импорта.", reply_markup=kb_home())
+             await cq.answer()
+             return
+ 
+-        repo = ProductsRepo(db)
+-        for it in items:
+-            await repo.create(
+-                shop_id=shop_id,
+-                category_id=cat_id,
+-                name=it["name"],
+-                price=float(it["price"]),
+-                description=it.get("description") or "",
++        await state.update_data(bulk_import_started=True)
++        try:
++            await cq.message.edit_reply_markup(reply_markup=None)
++        except Exception:
++            logger.warning("Failed to remove bulk import keyboard", exc_info=True)
++
++        try:
++            repo = ProductsRepo(db)
++            for it in items:
++                await repo.create(
++                    shop_id=shop_id,
++                    category_id=cat_id,
++                    name=it["name"],
++                    price=float(it["price"]),
++                    description=it.get("description") or "",
++                )
++        except Exception:
++            logger.error("Bulk import failed for admin %s", cq.from_user.id, exc_info=True)
++            await state.clear()
++            await cq.message.edit_text(
++                "Ошибка во время импорта. Проверьте файл и попробуйте снова.",
++                reply_markup=kb_admin_main(),
+             )
++            await cq.answer()
++            return
++
++        imported_count = len(items)
++        skipped_count = len(errors)
++        summary_lines = [
++            f"Импортировано: {imported_count} ✅",
++            f"Пропущено строк: {skipped_count}",
++        ]
++        if errors:
++            shown = errors[:5]
++            summary_lines.append("Ошибки:")
++            summary_lines.extend(f"- {err}" for err in shown)
++            if len(errors) > 5:
++                summary_lines.append(f"... и ещё {len(errors) - 5} ошибок")
+ 
+         await state.clear()
+-        await cq.message.edit_text("Импорт завершён ✅", reply_markup=kb_admin_main())
++        await cq.message.edit_text("\n".join(summary_lines), reply_markup=kb_admin_main())
+         await cq.answer()
+         return
+ 
+     if action == "cancel":
++        logger.info("Bulk import canceled by admin %s", cq.from_user.id)
+         await state.clear()
+         await cq.message.edit_text("Импорт отменён.", reply_markup=kb_admin_main())
+         await cq.answer()
+         return
+ 
++    if len(parts) == 3:
++        try:
++            cat_id = int(parts[2])
++        except ValueError:
++            await cq.answer("Неизвестное действие.", show_alert=True)
++            return
++        await state.set_state(ProductStates.bulk_import)
++        await state.update_data(category_id=cat_id, bulk_import_started=False)
++        await cq.message.edit_text(
++            "Загрузите CSV файл с товарами.\n"
++            "Формат строк: Название; Цена; Описание (опционально).",
++            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
++                [InlineKeyboardButton(text="🔙 Назад", callback_data=f"a:pcat:{cat_id}")],
++                [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")],
++            ]),
++        )
++        await cq.answer()
++        return
++
+ 
+ @router.message(ProductStates.bulk_import)
+ async def bulk_import_file(message: Message, state: FSMContext, db: Database):
+     from app.services.import_service import parse_products_csv
+ 
+     if not await is_shop_admin(db, message.from_user.id):
+         await message.answer("Нет доступа.")
+         return
+ 
+     if not message.document:
+         await message.answer("Отправьте CSV файл документом.")
+         return
+ 
+     filename = (message.document.file_name or "").lower()
+     if not filename.endswith(".csv"):
+-        await message.answer("Нужен CSV файл.")
++        await message.answer("Нужен CSV файл.\n\n" + bulk_format_hint())
+         return
+ 
++    logger.info("Bulk import file received from admin %s: %s", message.from_user.id, filename)
++
+     file = await message.bot.get_file(message.document.file_id)
+     data = await message.bot.download_file(file.file_path)
+     content = data.read()
+ 
+     preview = parse_products_csv(content)
+     errors = preview.errors
+ 
+     data_state = await state.get_data()
+     cat_id = int(data_state.get("category_id") or 0)
++    items = list(preview.items)
+     if cat_id:
+         async with db.conn() as conn:
+             cur = await conn.execute(
+                 "SELECT name_norm FROM products WHERE category_id=?",
+                 (cat_id,),
+             )
+             existing = {str(r["name_norm"] or "") for r in await cur.fetchall()}
+-        for item in preview.items:
++        filtered_items = []
++        for item in items:
+             if item.name and normalize_text(item.name) in existing:
+                 errors.append(f"Дубликат в базе: {item.name}")
++                continue
++            filtered_items.append(item)
++        items = filtered_items
+ 
+-    if errors:
+-        await message.answer("Ошибки в файле:\n" + "\n".join(errors))
+-        return
+-
+-    items = preview.items
+     if not items:
+-        await message.answer("Файл пустой.")
++        errors_text = ""
++        if errors:
++            errors_text = (
++                "Ошибки:\n"
++                + "\n".join(errors[:5])
++                + ("\n... и ещё ошибки" if len(errors) > 5 else "")
++                + "\n\n"
++            )
++        await message.answer(
++            "Файл не содержит новых товаров.\n"
++            + errors_text
++            + bulk_format_hint()
++        )
+         return
+ 
+     await state.update_data(
+         bulk_items=[{"name": i.name, "price": i.price, "description": i.description} for i in items],
++        bulk_errors=errors,
++        bulk_import_started=False,
+     )
+ 
+     preview_lines = []
+     for idx, it in enumerate(items[:5], start=1):
+         preview_lines.append(f"{idx}. {it.name} — {it.price}")
+     if len(items) > 5:
+         preview_lines.append(f"... и ещё {len(items) - 5} строк")
+ 
++    warning_text = ""
++    if errors:
++        shown = errors[:5]
++        warning_lines = ["\nОбнаружены ошибки, они будут пропущены:"]
++        warning_lines.extend(f"- {err}" for err in shown)
++        if len(errors) > 5:
++            warning_lines.append(f"... и ещё {len(errors) - 5} ошибок")
++        warning_text = "\n".join(warning_lines)
++
+     await message.answer(
+-        "Предпросмотр импорта:\n" + "\n".join(preview_lines),
++        "Предпросмотр импорта:\n"
++        + "\n".join(preview_lines)
++        + warning_text,
+         reply_markup=kb_bulk_confirm(),
+     )
+diff --git a/samples/products_import_sample.csv b/samples/products_import_sample.csv
+new file mode 100644
+index 0000000000000000000000000000000000000000..2ad199a78b80edd5511e04659e665d378400f90f
+--- /dev/null
++++ b/samples/products_import_sample.csv
+@@ -0,0 +1,4 @@
++Банан; 12.5; Спелый банан
++Яблоко; 8; Красное яблоко
++Молоко 2.5%; 64.9; Пастеризованное 1л
++Хлеб; 35; Ржаной
