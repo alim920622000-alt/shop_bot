@@ -41,7 +41,7 @@ async def list_shops(cq: CallbackQuery, db: Database, state: FSMContext):
         await cq.answer()
         return
 
-    await state.update_data(last_kind="shop")
+    await state.update_data(last_kind="shop", last_view={"name": "shops_list"})
     await cq.message.edit_text("Выберите магазин:", reply_markup=kb_shops_list(items, "shop"))
     await cq.answer()
 
@@ -59,7 +59,8 @@ async def order_menu(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
 
 @router.callback_query(F.data == "c:cart_menu")
-async def cart_menu(cq: CallbackQuery):
+async def cart_menu(cq: CallbackQuery, state: FSMContext):
+    await state.update_data(last_view={"name": "cart_menu"})
     await cq.message.edit_text("Выберите корзину:", reply_markup=kb_cart_menu())
     await cq.answer()
 
@@ -73,49 +74,67 @@ async def list_restaurants(cq: CallbackQuery, db: Database, state: FSMContext):
         await cq.answer()
         return
 
-    await state.update_data(last_kind="restaurant")
+    await state.update_data(last_kind="restaurant", last_view={"name": "restaurants_list"})
     await cq.message.edit_text("Выберите ресторан:", reply_markup=kb_shops_list(items, "restaurant"))
     await cq.answer()
 
 
 @router.callback_query(F.data.startswith("c:pick:"))
-async def pick_shop(cq: CallbackQuery, db: Database):
+async def pick_shop(cq: CallbackQuery, db: Database, state: FSMContext):
     # c:pick:{kind}:{shop_id}
     _, _, kind, shop_id_str = cq.data.split(":", 3)
     shop_id = int(shop_id_str)
 
-    cats = CategoriesRepo(db)
-    categories = await cats.list_for_shop(shop_id, active_only=True)
-    if not categories:
-        await cq.message.edit_text("Категорий пока нет.", reply_markup=kb_back(f"{kind}_list"))
-        await cq.answer()
-        return
+    await state.update_data(
+        last_kind=kind,
+        last_view={"name": "categories", "kind": kind, "shop_id": shop_id},
+    )
 
-    title = "Категории магазина:" if kind == "shop" else "Категории ресторана:"
-    await cq.message.edit_text(title, reply_markup=kb_categories_list(categories, kind, shop_id))
+    await show_categories(cq.message, db, kind, shop_id)
     await cq.answer()
 
 
+async def show_categories(message: Message, db: Database, kind: str, shop_id: int):
+    cats = CategoriesRepo(db)
+    categories = await cats.list_for_shop(shop_id, active_only=True)
+    if not categories:
+        await message.edit_text("Категорий пока нет.", reply_markup=kb_back(f"{kind}_list"))
+        return
+
+    title = "Категории магазина:" if kind == "shop" else "Категории ресторана:"
+    await message.edit_text(title, reply_markup=kb_categories_list(categories, kind, shop_id))
+
+
 @router.callback_query(F.data.startswith("c:cat:"))
-async def open_category(cq: CallbackQuery, db: Database):
+async def open_category(cq: CallbackQuery, db: Database, state: FSMContext):
     # c:cat:{shop_id}:{category_id}
     _, _, shop_id_str, category_id_str = cq.data.split(":", 3)
     shop_id = int(shop_id_str)
     category_id = int(category_id_str)
 
+    await show_category_products(cq.message, db, state, shop_id, category_id)
+    await cq.answer()
+
+
+async def show_category_products(
+    message: Message,
+    db: Database,
+    state: FSMContext,
+    shop_id: int,
+    category_id: int,
+):
     prod = ProductsRepo(db)
     products = await prod.list_by_category(category_id, active_only=True)
 
     if not products:
-        await cq.message.edit_text("В этой категории пока нет товаров.", reply_markup=kb_back("order_menu"))
-        await cq.answer()
+        await message.edit_text("В этой категории пока нет товаров.", reply_markup=kb_back("order_menu"))
         return
 
-    await cq.message.edit_text(
+    await state.update_data(last_view={"name": "products", "shop_id": shop_id, "category_id": category_id})
+    await message.edit_text(
         "Список товаров:",
         reply_markup=kb_products_list(products, shop_id, category_id)
     )
-    await cq.answer()
 
 
 @router.callback_query(F.data.startswith("c:prod:"))
@@ -186,6 +205,53 @@ async def back_to_categories(cq: CallbackQuery, db: Database):
 @router.callback_query(F.data.startswith("c:back:"))
 async def back(cq: CallbackQuery, db: Database, state: FSMContext):
     target = cq.data.split(":", 2)[2]
+    data = await state.get_data()
+
+    if target == "from_cart":
+        return_view = data.get("cart_return_view")
+        if (
+            return_view
+            and return_view.get("name") == "products"
+            and return_view.get("shop_id") is not None
+            and return_view.get("category_id") is not None
+        ):
+            await show_category_products(
+                cq.message,
+                db,
+                state,
+                return_view.get("shop_id"),
+                return_view.get("category_id"),
+            )
+            await cq.answer()
+            return
+        if (
+            return_view
+            and return_view.get("name") == "categories"
+            and return_view.get("kind") is not None
+            and return_view.get("shop_id") is not None
+        ):
+            await show_categories(
+                cq.message,
+                db,
+                return_view.get("kind"),
+                return_view.get("shop_id"),
+            )
+            await cq.answer()
+            return
+        if return_view and return_view.get("name") == "cart_menu":
+            await cq.message.edit_text("Выберите корзину:", reply_markup=kb_cart_menu())
+            await cq.answer()
+            return
+        if return_view and return_view.get("name") == "shops_list":
+            await list_shops(cq, db, state)
+            return
+        if return_view and return_view.get("name") == "restaurants_list":
+            await list_restaurants(cq, db, state)
+            return
+        await cq.message.edit_text("Что будем заказывать?", reply_markup=kb_order_menu())
+        await cq.answer()
+        return
+
     await state.clear()
 
     if target == "main":
@@ -210,8 +276,9 @@ async def back(cq: CallbackQuery, db: Database, state: FSMContext):
         return
 
     if target == "cart":
-        cq.data = "c:cart"
-        await open_cart(cq, db)  # <-- тут нужен db, поэтому проще сделать отдельный back ниже
+        await render_cart(cq.message, cq.from_user.id, db, business_type=data.get("cart_kind"))
+        await cq.answer()
+        return
 
     if target == "cart_menu":
         await cq.message.edit_text("Выберите корзину:", reply_markup=kb_cart_menu())
@@ -226,7 +293,7 @@ async def render_cart(message, user_id: int, db: Database, business_type: str | 
     items = await cart.list_items(user_id, business_type=business_type)
 
     if not items:
-        await message.edit_text("Корзина пуста.", reply_markup=kb_back("cart_menu"))
+        await message.edit_text("Корзина пуста.", reply_markup=kb_back("from_cart"))
         return
 
     cart_title = "🧺 Корзина"
@@ -247,12 +314,13 @@ async def render_cart(message, user_id: int, db: Database, business_type: str | 
 
 @router.callback_query(F.data.startswith("c:cart"))
 async def open_cart(cq: CallbackQuery, db: Database, state: FSMContext):
+    data = await state.get_data()
     parts = cq.data.split(":")
     kind = parts[2] if len(parts) > 2 else "auto"
     if kind == "auto":
-        data = await state.get_data()
         kind = data.get("last_kind") or ""
     business_type = kind if kind in ("shop", "restaurant") else None
+    await state.update_data(cart_return_view=data.get("last_view"))
     if business_type:
         await state.update_data(cart_kind=business_type)
     await render_cart(cq.message, cq.from_user.id, db, business_type=business_type)
@@ -397,10 +465,4 @@ async def _create_order_for_shop(cq: CallbackQuery, db: Database, shop_id: int):
         f"✅ Заказ успешно создан!\nНомер заказа: {order_id}\nСтатус: new",
         reply_markup=kb_after_order(),
     )
-    await cq.answer()
-
-
-@router.callback_query(F.data == "c:back:cart")
-async def back_to_cart(cq: CallbackQuery, db: Database):
-    await open_cart(cq, db)
     await cq.answer()

@@ -116,7 +116,7 @@ def kb_cart(items: list[dict]) -> InlineKeyboardMarkup:
         ])
 
     kb.append([InlineKeyboardButton(text="🧾 Оформить заказ", callback_data="c:checkout")])
-    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="c:back:cart_menu")])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="c:back:from_cart")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
