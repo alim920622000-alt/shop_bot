@@ -72,6 +72,27 @@ class OrdersRepo:
     async def list_history_for_shop(self, shop_id: int, statuses: Sequence[str]) -> Sequence[dict]:
         return await self.list_current_for_shop(shop_id, statuses)
 
+    async def list_for_client(self, client_user_id: int, statuses: Sequence[str] | None = None) -> Sequence[dict]:
+        params: list[object] = [client_user_id]
+        where = ["o.client_user_id=?"]
+        if statuses:
+            placeholders = ",".join(["?"] * len(statuses))
+            where.append(f"o.status IN ({placeholders})")
+            params.extend(statuses)
+
+        query = f"""
+            SELECT o.*, s.name as shop_name, s.business_type
+            FROM orders o
+            JOIN shops s ON s.id = o.shop_id
+            WHERE {" AND ".join(where)}
+            ORDER BY o.created_at DESC
+        """
+
+        async with self.db.conn() as conn:
+            cur = await conn.execute(query, params)
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
     async def get_order(self, order_id: int) -> Optional[dict]:
         async with self.db.conn() as conn:
             cur = await conn.execute("SELECT * FROM orders WHERE id=?", (order_id,))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Optional, Sequence
 from app.db.database import Database
+from app.utils import normalize
 
 
 class CategoriesRepo:
@@ -8,19 +9,21 @@ class CategoriesRepo:
         self.db = db
 
     async def create(self, shop_id: int, name: str, sort: int = 0) -> int:
+        name_norm = normalize(name)
         async with self.db.conn() as conn:
             cur = await conn.execute(
-                "INSERT INTO categories (shop_id, name, sort) VALUES (?, ?, ?)",
-                (shop_id, name, sort),
+                "INSERT INTO categories (shop_id, name, name_norm, sort) VALUES (?, ?, ?, ?)",
+                (shop_id, name, name_norm, sort),
             )
             await conn.commit()
             return int(cur.lastrowid)
 
     async def rename(self, category_id: int, new_name: str) -> None:
+        name_norm = normalize(new_name)
         async with self.db.conn() as conn:
             await conn.execute(
-                "UPDATE categories SET name=? WHERE id=?",
-                (new_name, category_id),
+                "UPDATE categories SET name=?, name_norm=? WHERE id=?",
+                (new_name, name_norm, category_id),
             )
             await conn.commit()
 
