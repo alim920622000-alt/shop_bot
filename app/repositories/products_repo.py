@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Optional, Sequence
 from app.db.database import Database
+from app.services.search_utils import normalize_text, build_keywords
 
 
 class ProductsRepo:
@@ -9,11 +10,13 @@ class ProductsRepo:
 
     async def create(self, shop_id: int, category_id: int, name: str, price: float,
                      description: str | None = None, photo_url: str | None = None) -> int:
+        name_norm = normalize_text(name)
+        keywords_norm = build_keywords(name, description or "")
         async with self.db.conn() as conn:
             cur = await conn.execute(
-                """INSERT INTO products (shop_id, category_id, name, description, price, photo_url)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (shop_id, category_id, name, description, price, photo_url),
+                """INSERT INTO products (shop_id, category_id, name, description, price, photo_url, name_norm, keywords_norm)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (shop_id, category_id, name, description, price, photo_url, name_norm, keywords_norm),
             )
             await conn.commit()
             return int(cur.lastrowid)
@@ -24,6 +27,7 @@ class ProductsRepo:
         params = []
         if name is not None:
             fields.append("name=?"); params.append(name)
+            fields.append("name_norm=?"); params.append(normalize_text(name))
         if description is not None:
             fields.append("description=?"); params.append(description)
         if price is not None:
@@ -33,6 +37,24 @@ class ProductsRepo:
 
         if not fields:
             return
+
+        if name is not None or description is not None:
+            base_name = name
+            base_desc = description
+            if base_name is None or base_desc is None:
+                async with self.db.conn() as conn:
+                    cur = await conn.execute(
+                        "SELECT name, description FROM products WHERE id=?",
+                        (product_id,),
+                    )
+                    row = await cur.fetchone()
+                    if row:
+                        if base_name is None:
+                            base_name = row["name"]
+                        if base_desc is None:
+                            base_desc = row["description"] or ""
+            fields.append("keywords_norm=?")
+            params.append(build_keywords(base_name or "", base_desc or ""))
 
         params.append(product_id)
         q = "UPDATE products SET " + ", ".join(fields) + " WHERE id=?"

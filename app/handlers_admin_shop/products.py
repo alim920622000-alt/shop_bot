@@ -7,6 +7,8 @@ from app.db.database import Database
 from app.handlers_admin_shop.utils import get_admin_shop_ids, is_shop_admin
 from app.handlers_admin_shop.start import kb_admin_main
 from app.repositories.products_repo import ProductsRepo
+from app.services.search_service import SearchService
+from app.services.search_utils import normalize_text
 
 router = Router()
 
@@ -14,6 +16,8 @@ router = Router()
 class ProductStates(StatesGroup):
     add_category = State()
     add_product = State()
+    search = State()
+    bulk_import = State()
 
 
 def kb_home() -> InlineKeyboardMarkup:
@@ -31,6 +35,7 @@ def kb_categories(cats: list[dict]) -> InlineKeyboardMarkup:
             callback_data=f"a:pcat:{c['id']}"
         )])
 
+    kb.append([InlineKeyboardButton(text="🔎 Поиск по товарам", callback_data="a:psearch")])
     kb.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="a:paddcat")])
     kb.append([InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -46,6 +51,7 @@ def kb_products(cat_id: int, items: list[dict]) -> InlineKeyboardMarkup:
         )])
 
     kb.append([InlineKeyboardButton(text="➕ Добавить товар", callback_data=f"a:paddprod:{cat_id}")])
+    kb.append([InlineKeyboardButton(text="📥 Массовое добавление", callback_data=f"a:bulk:{cat_id}")])
     kb.append([
         InlineKeyboardButton(text="🔙 Категории", callback_data="a:products"),
         InlineKeyboardButton(text="🏠 Главная", callback_data="a:home"),
@@ -61,6 +67,24 @@ def kb_product_card(cat_id: int, product_id: int, is_active: int) -> InlineKeybo
             InlineKeyboardButton(text="🔙 Назад", callback_data=f"a:pcat:{cat_id}"),
             InlineKeyboardButton(text="🏠 Главная", callback_data="a:home"),
         ],
+    ])
+
+
+def kb_search_results(items: list[dict]) -> InlineKeyboardMarkup:
+    kb = []
+    for p in items:
+        kb.append([InlineKeyboardButton(
+            text=f"{p['name']} — {p['price']}",
+            callback_data=f"a:pprod:{p['category_id']}:{p['id']}"
+        )])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="a:products")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def kb_bulk_confirm() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Импортировать", callback_data="a:bulk:confirm")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="a:bulk:cancel")],
     ])
 
 
@@ -133,8 +157,8 @@ async def add_category_save(message: Message, state: FSMContext, db: Database):
 
     async with db.conn() as conn:
         await conn.execute(
-            "INSERT INTO categories(shop_id, name, sort, is_active) VALUES(?,?,0,1)",
-            (shop_id, name),
+            "INSERT INTO categories(shop_id, name, name_norm, sort, is_active) VALUES(?,?,?,0,1)",
+            (shop_id, name, normalize_text(name)),
         )
         await conn.commit()
 
@@ -276,3 +300,162 @@ async def toggle_product(cq: CallbackQuery, db: Database):
         f"Статус: {'✅ Активен' if int(p['is_active'])==1 else '⛔ Выключен'}\n"
     )
     await cq.message.edit_text(text, reply_markup=kb_product_card(cat_id, product_id, p["is_active"]))
+
+
+@router.callback_query(F.data == "a:psearch")
+async def search_prompt(cq: CallbackQuery, state: FSMContext, db: Database):
+    if not await is_shop_admin(db, cq.from_user.id):
+        await cq.answer("Нет доступа", show_alert=True)
+        return
+
+    shop_id = await _get_shop_id_for_admin(db, cq.from_user.id)
+    if not shop_id:
+        await cq.message.edit_text("Нет привязанного магазина.", reply_markup=kb_home())
+        await cq.answer()
+        return
+
+    await state.set_state(ProductStates.search)
+    await state.update_data(search_shop_id=shop_id)
+    await cq.message.edit_text("Введите текст для поиска товара:", reply_markup=kb_home())
+    await cq.answer()
+
+
+@router.message(ProductStates.search)
+async def search_products(message: Message, state: FSMContext, db: Database):
+    if not await is_shop_admin(db, message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("Введите текст для поиска.")
+        return
+
+    data = await state.get_data()
+    shop_id = int(data.get("search_shop_id") or 0)
+
+    service = SearchService(db)
+    results = await service.search_products(shop_id=shop_id, query=query, active_only=False)
+    if not results:
+        await message.answer("Ничего не найдено.")
+        return
+
+    products = [r.product for r in results]
+    await message.answer("Результаты поиска:", reply_markup=kb_search_results(products))
+
+
+@router.callback_query(F.data.startswith("a:bulk:"))
+async def bulk_import_prompt(cq: CallbackQuery, state: FSMContext, db: Database):
+    if not await is_shop_admin(db, cq.from_user.id):
+        await cq.answer("Нет доступа", show_alert=True)
+        return
+
+    parts = cq.data.split(":")
+    if len(parts) == 3:
+        cat_id = int(parts[2])
+        await state.set_state(ProductStates.bulk_import)
+        await state.update_data(category_id=cat_id)
+        await cq.message.edit_text(
+            "Загрузите CSV файл с товарами.\n"
+            "Формат строк: Название; Цена; Описание (опционально).",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data=f"a:pcat:{cat_id}")],
+                [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")],
+            ]),
+        )
+        await cq.answer()
+        return
+
+    action = parts[2]
+    if action == "confirm":
+        data = await state.get_data()
+        items = data.get("bulk_items") or []
+        cat_id = int(data.get("category_id") or 0)
+        shop_id = await _get_shop_id_for_admin(db, cq.from_user.id)
+        if not items or not cat_id or not shop_id:
+            await cq.message.edit_text("Нет данных для импорта.", reply_markup=kb_home())
+            await cq.answer()
+            return
+
+        repo = ProductsRepo(db)
+        for it in items:
+            await repo.create(
+                shop_id=shop_id,
+                category_id=cat_id,
+                name=it["name"],
+                price=float(it["price"]),
+                description=it.get("description") or "",
+            )
+
+        await state.clear()
+        await cq.message.edit_text("Импорт завершён ✅", reply_markup=kb_admin_main())
+        await cq.answer()
+        return
+
+    if action == "cancel":
+        await state.clear()
+        await cq.message.edit_text("Импорт отменён.", reply_markup=kb_admin_main())
+        await cq.answer()
+        return
+
+
+@router.message(ProductStates.bulk_import)
+async def bulk_import_file(message: Message, state: FSMContext, db: Database):
+    from app.services.import_service import parse_products_csv
+
+    if not await is_shop_admin(db, message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+
+    if not message.document:
+        await message.answer("Отправьте CSV файл документом.")
+        return
+
+    filename = (message.document.file_name or "").lower()
+    if not filename.endswith(".csv"):
+        await message.answer("Нужен CSV файл.")
+        return
+
+    file = await message.bot.get_file(message.document.file_id)
+    data = await message.bot.download_file(file.file_path)
+    content = data.read()
+
+    preview = parse_products_csv(content)
+    errors = preview.errors
+
+    data_state = await state.get_data()
+    cat_id = int(data_state.get("category_id") or 0)
+    if cat_id:
+        async with db.conn() as conn:
+            cur = await conn.execute(
+                "SELECT name_norm FROM products WHERE category_id=?",
+                (cat_id,),
+            )
+            existing = {str(r["name_norm"] or "") for r in await cur.fetchall()}
+        for item in preview.items:
+            if item.name and normalize_text(item.name) in existing:
+                errors.append(f"Дубликат в базе: {item.name}")
+
+    if errors:
+        await message.answer("Ошибки в файле:\n" + "\n".join(errors))
+        return
+
+    items = preview.items
+    if not items:
+        await message.answer("Файл пустой.")
+        return
+
+    await state.update_data(
+        bulk_items=[{"name": i.name, "price": i.price, "description": i.description} for i in items],
+    )
+
+    preview_lines = []
+    for idx, it in enumerate(items[:5], start=1):
+        preview_lines.append(f"{idx}. {it.name} — {it.price}")
+    if len(items) > 5:
+        preview_lines.append(f"... и ещё {len(items) - 5} строк")
+
+    await message.answer(
+        "Предпросмотр импорта:\n" + "\n".join(preview_lines),
+        reply_markup=kb_bulk_confirm(),
+    )

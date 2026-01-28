@@ -36,15 +36,20 @@ class CartRepo:
             await conn.execute("DELETE FROM cart WHERE user_id=?", (user_id,))
             await conn.commit()
 
-    async def list_items(self, user_id: int) -> Sequence[dict]:
+    async def list_items(self, user_id: int, business_type: str | None = None) -> Sequence[dict]:
+        q = """
+            SELECT c.product_id, c.quantity, p.name, p.price, p.shop_id, s.business_type
+            FROM cart c
+            JOIN products p ON p.id = c.product_id
+            JOIN shops s ON s.id = p.shop_id
+            WHERE c.user_id=?
+        """
+        params: list = [user_id]
+        if business_type:
+            q += " AND s.business_type=?"
+            params.append(business_type)
+        q += " ORDER BY p.id DESC"
         async with self.db.conn() as conn:
-            cur = await conn.execute(
-                """SELECT c.product_id, c.quantity, p.name, p.price, p.shop_id
-                   FROM cart c
-                   JOIN products p ON p.id = c.product_id
-                   WHERE c.user_id=?
-                   ORDER BY p.id DESC""",
-                (user_id,),
-            )
+            cur = await conn.execute(q, params)
             rows = await cur.fetchall()
             return [dict(r) for r in rows]

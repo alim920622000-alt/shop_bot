@@ -97,3 +97,21 @@ class OrdersRepo:
                 (new_status, order_id),
             )
             await conn.commit()
+
+    async def list_for_client(self, client_user_id: int, statuses: Sequence[str] | None = None) -> Sequence[dict]:
+        q = """
+            SELECT o.*, s.name AS shop_name, s.business_type
+            FROM orders o
+            JOIN shops s ON s.id = o.shop_id
+            WHERE o.client_user_id=?
+        """
+        params: list = [client_user_id]
+        if statuses:
+            placeholders = ",".join(["?"] * len(statuses))
+            q += f" AND o.status IN ({placeholders})"
+            params.extend(statuses)
+        q += " ORDER BY o.created_at DESC"
+        async with self.db.conn() as conn:
+            cur = await conn.execute(q, params)
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]

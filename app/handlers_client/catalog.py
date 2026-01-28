@@ -1,14 +1,19 @@
 from aiogram import Router, F
 from app.repositories.admins_repo import AdminsRepo
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
 from app.db.database import Database
 from app.repositories.shops_repo import ShopsRepo
 from app.repositories.categories_repo import CategoriesRepo
 from app.repositories.products_repo import ProductsRepo
 from app.repositories.orders_repo import OrdersRepo
 from app.repositories.cart_repo import CartRepo
+from app.services.search_service import SearchService
 from app.handlers_client.kb import (
     kb_client_main,
+    kb_order_menu,
+    kb_cart_menu,
     kb_back,
     kb_shops_list,
     kb_categories_list,
@@ -22,36 +27,53 @@ from app.handlers_client.kb import (
 router = Router()
 
 
+class ClientCatalogStates(StatesGroup):
+    search = State()
+
+
 @router.callback_query(F.data == "c:shops")
-async def list_shops(cq: CallbackQuery, db: Database):
+async def list_shops(cq: CallbackQuery, db: Database, state: FSMContext):
     repo = ShopsRepo(db)
     items = await repo.list_active(business_type="shop")
 
     if not items:
-        await cq.message.edit_text("Магазинов пока нет.", reply_markup=kb_back("main"))
+        await cq.message.edit_text("Магазинов пока нет.", reply_markup=kb_back("order_menu"))
         await cq.answer()
         return
 
+    await state.update_data(last_kind="shop")
     await cq.message.edit_text("Выберите магазин:", reply_markup=kb_shops_list(items, "shop"))
     await cq.answer()
 
 
 @router.callback_query(F.data == "c:home")
-async def client_home(cq: CallbackQuery):
+async def client_home(cq: CallbackQuery, state: FSMContext):
+    await state.clear()
     await cq.message.edit_text("Выберите раздел:", reply_markup=kb_client_main())
     await cq.answer()
 
+@router.callback_query(F.data == "c:order_menu")
+async def order_menu(cq: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cq.message.edit_text("Что будем заказывать?", reply_markup=kb_order_menu())
+    await cq.answer()
+
+@router.callback_query(F.data == "c:cart_menu")
+async def cart_menu(cq: CallbackQuery):
+    await cq.message.edit_text("Выберите корзину:", reply_markup=kb_cart_menu())
+    await cq.answer()
 
 @router.callback_query(F.data == "c:restaurants")
-async def list_restaurants(cq: CallbackQuery, db: Database):
+async def list_restaurants(cq: CallbackQuery, db: Database, state: FSMContext):
     repo = ShopsRepo(db)
     items = await repo.list_active(business_type="restaurant")
 
     if not items:
-        await cq.message.edit_text("Ресторанов пока нет.", reply_markup=kb_back("main"))
+        await cq.message.edit_text("Ресторанов пока нет.", reply_markup=kb_back("order_menu"))
         await cq.answer()
         return
 
+    await state.update_data(last_kind="restaurant")
     await cq.message.edit_text("Выберите ресторан:", reply_markup=kb_shops_list(items, "restaurant"))
     await cq.answer()
 
@@ -85,7 +107,7 @@ async def open_category(cq: CallbackQuery, db: Database):
     products = await prod.list_by_category(category_id, active_only=True)
 
     if not products:
-        await cq.message.edit_text("В этой категории пока нет товаров.", reply_markup=kb_back("main"))
+        await cq.message.edit_text("В этой категории пока нет товаров.", reply_markup=kb_back("order_menu"))
         await cq.answer()
         return
 
@@ -104,7 +126,7 @@ async def open_product(cq: CallbackQuery, db: Database):
     prod = ProductsRepo(db)
     p = await prod.get(product_id)
     if not p:
-        await cq.message.edit_text("Товар не найден.", reply_markup=kb_back("main"))
+        await cq.message.edit_text("Товар не найден.", reply_markup=kb_back("order_menu"))
         await cq.answer()
         return
 
@@ -145,14 +167,14 @@ async def back_to_categories(cq: CallbackQuery, db: Database):
     shops = ShopsRepo(db)
     shop = await shops.get(shop_id)
     if not shop:
-        await cq.message.edit_text("Точка не найдена.", reply_markup=kb_back("main"))
+        await cq.message.edit_text("Точка не найдена.", reply_markup=kb_back("order_menu"))
         await cq.answer()
         return
 
     cats = CategoriesRepo(db)
     categories = await cats.list_for_shop(shop_id, active_only=True)
     if not categories:
-        await cq.message.edit_text("Категорий пока нет.", reply_markup=kb_back("main"))
+        await cq.message.edit_text("Категорий пока нет.", reply_markup=kb_back("order_menu"))
         await cq.answer()
         return
 
@@ -162,8 +184,9 @@ async def back_to_categories(cq: CallbackQuery, db: Database):
 
 
 @router.callback_query(F.data.startswith("c:back:"))
-async def back(cq: CallbackQuery):
+async def back(cq: CallbackQuery, db: Database, state: FSMContext):
     target = cq.data.split(":", 2)[2]
+    await state.clear()
 
     if target == "main":
         await cq.message.edit_text("Выберите раздел:", reply_markup=kb_client_main())
@@ -172,13 +195,17 @@ async def back(cq: CallbackQuery):
 
     if target == "shop_list":
         # вернуться в список магазинов
-        await cq.message.edit_text("Выберите раздел:", reply_markup=kb_client_main())
-        # затем пользователь нажмёт "Магазины" снова (MVP)
+        await cq.message.edit_text("Что будем заказывать?", reply_markup=kb_order_menu())
         await cq.answer()
         return
 
     if target == "restaurant_list":
-        await cq.message.edit_text("Выберите раздел:", reply_markup=kb_client_main())
+        await cq.message.edit_text("Что будем заказывать?", reply_markup=kb_order_menu())
+        await cq.answer()
+        return
+
+    if target == "order_menu":
+        await cq.message.edit_text("Что будем заказывать?", reply_markup=kb_order_menu())
         await cq.answer()
         return
 
@@ -186,19 +213,30 @@ async def back(cq: CallbackQuery):
         cq.data = "c:cart"
         await open_cart(cq, db)  # <-- тут нужен db, поэтому проще сделать отдельный back ниже
 
+    if target == "cart_menu":
+        await cq.message.edit_text("Выберите корзину:", reply_markup=kb_cart_menu())
+        await cq.answer()
+        return
+
     await cq.answer("Неизвестный переход", show_alert=True)
 
 
-async def render_cart(message, user_id: int, db: Database):
+async def render_cart(message, user_id: int, db: Database, business_type: str | None = None):
     cart = CartRepo(db)
-    items = await cart.list_items(user_id)
+    items = await cart.list_items(user_id, business_type=business_type)
 
     if not items:
-        await message.edit_text("Корзина пуста.", reply_markup=kb_back("main"))
+        await message.edit_text("Корзина пуста.", reply_markup=kb_back("cart_menu"))
         return
 
+    cart_title = "🧺 Корзина"
+    if business_type == "shop":
+        cart_title = "🧺 Корзина магазинов"
+    if business_type == "restaurant":
+        cart_title = "🧺 Корзина ресторанов"
+
     total = sum(float(i["price"]) * int(i["quantity"]) for i in items)
-    text_lines = ["🧺 Корзина:"]
+    text_lines = [f"{cart_title}:"]
     for i in items:
         line_total = float(i["price"]) * int(i["quantity"])
         text_lines.append(f"- {i['name']} x{i['quantity']} = {line_total}")
@@ -207,9 +245,17 @@ async def render_cart(message, user_id: int, db: Database):
     await message.edit_text("\n".join(text_lines), reply_markup=kb_cart(items))
 
 
-@router.callback_query(F.data == "c:cart")
-async def open_cart(cq: CallbackQuery, db: Database):
-    await render_cart(cq.message, cq.from_user.id, db)
+@router.callback_query(F.data.startswith("c:cart"))
+async def open_cart(cq: CallbackQuery, db: Database, state: FSMContext):
+    parts = cq.data.split(":")
+    kind = parts[2] if len(parts) > 2 else "auto"
+    if kind == "auto":
+        data = await state.get_data()
+        kind = data.get("last_kind") or ""
+    business_type = kind if kind in ("shop", "restaurant") else None
+    if business_type:
+        await state.update_data(cart_kind=business_type)
+    await render_cart(cq.message, cq.from_user.id, db, business_type=business_type)
     await cq.answer()
 
 
@@ -218,22 +264,59 @@ async def noop(cq: CallbackQuery):
     await cq.answer()
 
 
+@router.callback_query(F.data.startswith("c:search:"))
+async def search_prompt(cq: CallbackQuery, state: FSMContext):
+    # c:search:{kind}:{shop_id}
+    _, _, kind, shop_id_str = cq.data.split(":", 3)
+    await state.set_state(ClientCatalogStates.search)
+    await state.update_data(search_shop_id=int(shop_id_str), search_kind=kind)
+    await cq.message.edit_text(
+        "Введите текст для поиска. Я буду показывать результаты по мере ввода.",
+        reply_markup=kb_back("order_menu"),
+    )
+    await cq.answer()
+
+
+@router.message(ClientCatalogStates.search)
+async def search_input(message: Message, state: FSMContext, db: Database):
+    data = await state.get_data()
+    shop_id = int(data.get("search_shop_id") or 0)
+    kind = data.get("search_kind") or "shop"
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("Введите текст для поиска.")
+        return
+
+    service = SearchService(db)
+    results = await service.search_products(shop_id=shop_id, query=query, active_only=True)
+    if not results:
+        await message.answer("Ничего не найдено. Попробуйте другой запрос.")
+        return
+
+    products = [r.product for r in results]
+    await message.answer(
+        "Найденные товары:",
+        reply_markup=kb_products_list(products, shop_id, products[0]["category_id"]),
+    )
+
+
 @router.callback_query(F.data.startswith("c:cart_inc:"))
-async def cart_inc(cq: CallbackQuery, db: Database):
+async def cart_inc(cq: CallbackQuery, db: Database, state: FSMContext):
     product_id = int(cq.data.split(":")[2])
     cart = CartRepo(db)
     await cart.add(user_id=cq.from_user.id, product_id=product_id, qty=1)
     await cq.answer("Ок")
     # обновим экран корзины
-    await cq.answer("Ок")
-    await render_cart(cq.message, cq.from_user.id, db)
+    data = await state.get_data()
+    await render_cart(cq.message, cq.from_user.id, db, business_type=data.get("cart_kind"))
 
 
 @router.callback_query(F.data.startswith("c:cart_dec:"))
-async def cart_dec(cq: CallbackQuery, db: Database):
+async def cart_dec(cq: CallbackQuery, db: Database, state: FSMContext):
     product_id = int(cq.data.split(":")[2])
     cart = CartRepo(db)
-    items = await cart.list_items(cq.from_user.id)
+    data = await state.get_data()
+    items = await cart.list_items(cq.from_user.id, business_type=data.get("cart_kind"))
     current = next((x for x in items if x["product_id"] == product_id), None)
     if not current:
         await cq.answer("Нет в корзине", show_alert=True)
@@ -241,24 +324,26 @@ async def cart_dec(cq: CallbackQuery, db: Database):
     new_qty = int(current["quantity"]) - 1
     await cart.set_qty(user_id=cq.from_user.id, product_id=product_id, qty=new_qty)
     await cq.answer("Ок")
-    await render_cart(cq.message, cq.from_user.id, db)
+    await render_cart(cq.message, cq.from_user.id, db, business_type=data.get("cart_kind"))
 
 
 @router.callback_query(F.data.startswith("c:cart_del:"))
-async def cart_del(cq: CallbackQuery, db: Database):
+async def cart_del(cq: CallbackQuery, db: Database, state: FSMContext):
     product_id = int(cq.data.split(":")[2])
     cart = CartRepo(db)
     await cart.set_qty(user_id=cq.from_user.id, product_id=product_id, qty=0)
     await cq.answer("Удалено")
-    await render_cart(cq.message, cq.from_user.id, db)
+    data = await state.get_data()
+    await render_cart(cq.message, cq.from_user.id, db, business_type=data.get("cart_kind"))
 
 
 @router.callback_query(F.data == "c:checkout")
-async def checkout(cq: CallbackQuery, db: Database):
+async def checkout(cq: CallbackQuery, db: Database, state: FSMContext):
     cart = CartRepo(db)
-    items = await cart.list_items(cq.from_user.id)
+    data = await state.get_data()
+    items = await cart.list_items(cq.from_user.id, business_type=data.get("cart_kind"))
     if not items:
-        await cq.message.edit_text("Корзина пуста.", reply_markup=kb_back("main"))
+        await cq.message.edit_text("Корзина пуста.", reply_markup=kb_back("cart_menu"))
         await cq.answer()
         return
 

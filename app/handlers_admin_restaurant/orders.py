@@ -30,6 +30,7 @@ def kb_order_card(order_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🚚 В пути", callback_data=f"r:st:{order_id}:on_the_way")],
         [InlineKeyboardButton(text="✅ Завершён", callback_data=f"r:st:{order_id}:finished")],
         [InlineKeyboardButton(text="❌ Отменить", callback_data=f"r:st:{order_id}:canceled")],
+        [InlineKeyboardButton(text="💬 Чат по заказу", callback_data=f"r:chat:{order_id}")],
         [
             InlineKeyboardButton(text="🏠 Главная", callback_data="r:home"),
             InlineKeyboardButton(text="🔙 Назад", callback_data="r:orders"),

@@ -10,6 +10,7 @@ from app.db.database import Database
 from app.handlers_admin_restaurant.utils import get_admin_restaurant_ids
 from app.repositories.categories_repo import CategoriesRepo
 from app.repositories.products_repo import ProductsRepo
+from app.services.search_utils import normalize_text, build_keywords
 
 router = Router()
 class ProductFSM(StatesGroup):
@@ -233,10 +234,10 @@ async def add_product_desc(message: Message, state: FSMContext, db: Database):
     async with db.conn() as conn:
         await conn.execute(
             """
-            INSERT INTO products (shop_id, category_id, name, description, price, is_active)
-            VALUES (?, ?, ?, ?, ?, 1)
+            INSERT INTO products (shop_id, category_id, name, description, price, is_active, name_norm, keywords_norm)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
             """,
-            (restaurant_id, category_id, name, desc, price),
+            (restaurant_id, category_id, name, desc, price, normalize_text(name), build_keywords(name, desc)),
         )
         await conn.commit()
 
@@ -334,12 +335,8 @@ async def edit_name_apply(message: Message, state: FSMContext, db: Database):
     chat_id = int(data["origin_chat_id"])
     msg_id = int(data["origin_message_id"])
 
-    async with db.conn() as conn:
-        await conn.execute(
-            "UPDATE products SET name=? WHERE id=?",
-            (name, product_id),
-        )
-        await conn.commit()
+    prod = ProductsRepo(db)
+    await prod.update(product_id, name=name)
 
     await state.clear()
 
@@ -377,12 +374,8 @@ async def edit_price_apply(message: Message, state: FSMContext, db: Database):
     chat_id = int(data["origin_chat_id"])
     msg_id = int(data["origin_message_id"])
 
-    async with db.conn() as conn:
-        await conn.execute(
-            "UPDATE products SET price=? WHERE id=?",
-            (price, product_id),
-        )
-        await conn.commit()
+    prod = ProductsRepo(db)
+    await prod.update(product_id, price=price)
 
     await state.clear()
 
@@ -417,12 +410,8 @@ async def edit_desc_apply(message: Message, state: FSMContext, db: Database):
     chat_id = int(data["origin_chat_id"])
     msg_id = int(data["origin_message_id"])
 
-    async with db.conn() as conn:
-        await conn.execute(
-            "UPDATE products SET description=? WHERE id=?",
-            (desc, product_id),
-        )
-        await conn.commit()
+    prod = ProductsRepo(db)
+    await prod.update(product_id, description=desc)
 
     await state.clear()
 
