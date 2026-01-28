@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.state import State, StatesGroup
@@ -11,6 +13,7 @@ from app.services.search_service import SearchService
 from app.services.search_utils import normalize_text
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 class ProductStates(StatesGroup):
@@ -86,6 +89,15 @@ def kb_bulk_confirm() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✅ Импортировать", callback_data="a:bulk:confirm")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="a:bulk:cancel")],
     ])
+
+
+def bulk_format_hint() -> str:
+    return (
+        "Ожидаемый формат:\n"
+        "Название; Цена; Описание (опционально)\n"
+        "Пример:\n"
+        "Банан; 12.5; Спелый банан"
+    )
 
 
 async def _get_shop_id_for_admin(db: Database, user_id: int) -> int | None:
@@ -351,10 +363,81 @@ async def bulk_import_prompt(cq: CallbackQuery, state: FSMContext, db: Database)
         return
 
     parts = cq.data.split(":")
+    action = parts[2] if len(parts) > 2 else ""
+    if action == "confirm":
+        logger.info("Bulk import confirm pressed by admin %s", cq.from_user.id)
+        data = await state.get_data()
+        items = data.get("bulk_items") or []
+        errors = data.get("bulk_errors") or []
+        cat_id = int(data.get("category_id") or 0)
+        shop_id = await _get_shop_id_for_admin(db, cq.from_user.id)
+        if data.get("bulk_import_started"):
+            await cq.answer("Импорт уже запускается.", show_alert=True)
+            return
+        if not items or not cat_id or not shop_id:
+            await cq.message.edit_text("Нет данных для импорта.", reply_markup=kb_home())
+            await cq.answer()
+            return
+
+        await state.update_data(bulk_import_started=True)
+        try:
+            await cq.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            logger.warning("Failed to remove bulk import keyboard", exc_info=True)
+
+        try:
+            repo = ProductsRepo(db)
+            for it in items:
+                await repo.create(
+                    shop_id=shop_id,
+                    category_id=cat_id,
+                    name=it["name"],
+                    price=float(it["price"]),
+                    description=it.get("description") or "",
+                )
+        except Exception:
+            logger.error("Bulk import failed for admin %s", cq.from_user.id, exc_info=True)
+            await state.clear()
+            await cq.message.edit_text(
+                "Ошибка во время импорта. Проверьте файл и попробуйте снова.",
+                reply_markup=kb_admin_main(),
+            )
+            await cq.answer()
+            return
+
+        imported_count = len(items)
+        skipped_count = len(errors)
+        summary_lines = [
+            f"Импортировано: {imported_count} ✅",
+            f"Пропущено строк: {skipped_count}",
+        ]
+        if errors:
+            shown = errors[:5]
+            summary_lines.append("Ошибки:")
+            summary_lines.extend(f"- {err}" for err in shown)
+            if len(errors) > 5:
+                summary_lines.append(f"... и ещё {len(errors) - 5} ошибок")
+
+        await state.clear()
+        await cq.message.edit_text("\n".join(summary_lines), reply_markup=kb_admin_main())
+        await cq.answer()
+        return
+
+    if action == "cancel":
+        logger.info("Bulk import canceled by admin %s", cq.from_user.id)
+        await state.clear()
+        await cq.message.edit_text("Импорт отменён.", reply_markup=kb_admin_main())
+        await cq.answer()
+        return
+
     if len(parts) == 3:
-        cat_id = int(parts[2])
+        try:
+            cat_id = int(parts[2])
+        except ValueError:
+            await cq.answer("Неизвестное действие.", show_alert=True)
+            return
         await state.set_state(ProductStates.bulk_import)
-        await state.update_data(category_id=cat_id)
+        await state.update_data(category_id=cat_id, bulk_import_started=False)
         await cq.message.edit_text(
             "Загрузите CSV файл с товарами.\n"
             "Формат строк: Название; Цена; Описание (опционально).",
@@ -363,38 +446,6 @@ async def bulk_import_prompt(cq: CallbackQuery, state: FSMContext, db: Database)
                 [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")],
             ]),
         )
-        await cq.answer()
-        return
-
-    action = parts[2]
-    if action == "confirm":
-        data = await state.get_data()
-        items = data.get("bulk_items") or []
-        cat_id = int(data.get("category_id") or 0)
-        shop_id = await _get_shop_id_for_admin(db, cq.from_user.id)
-        if not items or not cat_id or not shop_id:
-            await cq.message.edit_text("Нет данных для импорта.", reply_markup=kb_home())
-            await cq.answer()
-            return
-
-        repo = ProductsRepo(db)
-        for it in items:
-            await repo.create(
-                shop_id=shop_id,
-                category_id=cat_id,
-                name=it["name"],
-                price=float(it["price"]),
-                description=it.get("description") or "",
-            )
-
-        await state.clear()
-        await cq.message.edit_text("Импорт завершён ✅", reply_markup=kb_admin_main())
-        await cq.answer()
-        return
-
-    if action == "cancel":
-        await state.clear()
-        await cq.message.edit_text("Импорт отменён.", reply_markup=kb_admin_main())
         await cq.answer()
         return
 
@@ -413,8 +464,10 @@ async def bulk_import_file(message: Message, state: FSMContext, db: Database):
 
     filename = (message.document.file_name or "").lower()
     if not filename.endswith(".csv"):
-        await message.answer("Нужен CSV файл.")
+        await message.answer("Нужен CSV файл.\n\n" + bulk_format_hint())
         return
+
+    logger.info("Bulk import file received from admin %s: %s", message.from_user.id, filename)
 
     file = await message.bot.get_file(message.document.file_id)
     data = await message.bot.download_file(file.file_path)
@@ -425,6 +478,7 @@ async def bulk_import_file(message: Message, state: FSMContext, db: Database):
 
     data_state = await state.get_data()
     cat_id = int(data_state.get("category_id") or 0)
+    items = list(preview.items)
     if cat_id:
         async with db.conn() as conn:
             cur = await conn.execute(
@@ -432,21 +486,34 @@ async def bulk_import_file(message: Message, state: FSMContext, db: Database):
                 (cat_id,),
             )
             existing = {str(r["name_norm"] or "") for r in await cur.fetchall()}
-        for item in preview.items:
+        filtered_items = []
+        for item in items:
             if item.name and normalize_text(item.name) in existing:
                 errors.append(f"Дубликат в базе: {item.name}")
+                continue
+            filtered_items.append(item)
+        items = filtered_items
 
-    if errors:
-        await message.answer("Ошибки в файле:\n" + "\n".join(errors))
-        return
-
-    items = preview.items
     if not items:
-        await message.answer("Файл пустой.")
+        errors_text = ""
+        if errors:
+            errors_text = (
+                "Ошибки:\n"
+                + "\n".join(errors[:5])
+                + ("\n... и ещё ошибки" if len(errors) > 5 else "")
+                + "\n\n"
+            )
+        await message.answer(
+            "Файл не содержит новых товаров.\n"
+            + errors_text
+            + bulk_format_hint()
+        )
         return
 
     await state.update_data(
         bulk_items=[{"name": i.name, "price": i.price, "description": i.description} for i in items],
+        bulk_errors=errors,
+        bulk_import_started=False,
     )
 
     preview_lines = []
@@ -455,7 +522,18 @@ async def bulk_import_file(message: Message, state: FSMContext, db: Database):
     if len(items) > 5:
         preview_lines.append(f"... и ещё {len(items) - 5} строк")
 
+    warning_text = ""
+    if errors:
+        shown = errors[:5]
+        warning_lines = ["\nОбнаружены ошибки, они будут пропущены:"]
+        warning_lines.extend(f"- {err}" for err in shown)
+        if len(errors) > 5:
+            warning_lines.append(f"... и ещё {len(errors) - 5} ошибок")
+        warning_text = "\n".join(warning_lines)
+
     await message.answer(
-        "Предпросмотр импорта:\n" + "\n".join(preview_lines),
+        "Предпросмотр импорта:\n"
+        + "\n".join(preview_lines)
+        + warning_text,
         reply_markup=kb_bulk_confirm(),
     )
