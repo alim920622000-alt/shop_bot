@@ -147,7 +147,14 @@ async def show_category_products(
     products = await prod.list_by_category(category_id, active_only=True)
 
     if not products:
-        await message.edit_text("В этой категории пока нет товаров.", reply_markup=kb_back("order_menu"))
+        data = await state.get_data()
+        last_kind = data.get("last_kind")
+        if not last_kind:
+            shops = ShopsRepo(db)
+            shop = await shops.get(shop_id)
+            last_kind = shop["business_type"] if shop else None
+        back_target = f"categories:{last_kind}:{shop_id}" if last_kind else "order_menu"
+        await message.edit_text("В этой категории пока нет товаров.", reply_markup=kb_back(back_target))
         return
 
     await state.update_data(last_view={"name": "products", "shop_id": shop_id, "category_id": category_id})
@@ -301,6 +308,14 @@ async def back(cq: CallbackQuery, db: Database, state: FSMContext):
         await cq.answer()
         return
 
+    if target == "categories":
+        if len(parts) >= 5:
+            kind = parts[3]
+            shop_id = int(parts[4])
+            await show_categories(cq.message, db, kind, shop_id)
+            await cq.answer()
+            return
+
     if target == "cart":
         await render_cart(
             cq.message,
@@ -389,7 +404,7 @@ async def search_prompt(cq: CallbackQuery, state: FSMContext):
     await state.update_data(search_shop_id=int(shop_id_str), search_kind=kind)
     await cq.message.edit_text(
         "Введите текст для поиска. Я буду показывать результаты по мере ввода.",
-        reply_markup=kb_back("order_menu"),
+        reply_markup=kb_back(f"categories:{kind}:{shop_id_str}"),
     )
     await cq.answer()
 
