@@ -18,7 +18,6 @@ class ProductFSM(StatesGroup):
     add_price = State()
     add_desc = State()
 
-    edit_name = State()
     edit_price = State()
     edit_desc = State()
 
@@ -79,7 +78,6 @@ def kb_products(products: list[dict], restaurant_id: int, category_id: int) -> I
 def kb_product_card(restaurant_id: int, category_id: int, product_id: int, is_active: int) -> InlineKeyboardMarkup:
     toggle_text = "⛔ Деактивировать" if is_active == 1 else "✅ Активировать"
     kb = [
-        [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"r:edit_name:{product_id}")],
         [InlineKeyboardButton(text="💰 Изменить цену", callback_data=f"r:edit_price:{product_id}")],
         [InlineKeyboardButton(text="📝 Изменить описание", callback_data=f"r:edit_desc:{product_id}")],
         [InlineKeyboardButton(text=toggle_text, callback_data=f"r:toggle:{product_id}")],
@@ -260,26 +258,6 @@ async def add_product_desc(message: Message, state: FSMContext, db: Database):
         pass
 
 
-@router.callback_query(F.data.startswith("r:edit_name:"))
-async def edit_name_start(cq: CallbackQuery, state: FSMContext, db: Database):
-    product_id = int(cq.data.split(":")[2])
-    prod = ProductsRepo(db)
-    p = await prod.get(product_id)
-    if not p:
-        await cq.answer("Не найдено", show_alert=True)
-        return
-    await state.update_data(
-        product_id=product_id,
-        restaurant_id=int(p["shop_id"]),
-        category_id=int(p["category_id"]),
-        origin_chat_id=cq.message.chat.id,
-        origin_message_id=cq.message.message_id,
-    )
-    await state.set_state(ProductFSM.edit_name)
-    await cq.message.edit_text(f"Текущее название: {p['name']}\nВведите новое название:", reply_markup=kb_cancel())
-    await cq.answer()
-
-
 @router.callback_query(F.data.startswith("r:edit_price:"))
 async def edit_price_start(cq: CallbackQuery, state: FSMContext, db: Database):
     product_id = int(cq.data.split(":")[2])
@@ -319,41 +297,6 @@ async def edit_desc_start(cq: CallbackQuery, state: FSMContext, db: Database):
     cur = p.get("description") or ""
     await cq.message.edit_text(f"Текущее описание:\n{cur}\n\nВведите новое описание или '-' чтобы очистить:", reply_markup=kb_cancel())
     await cq.answer()
-
-
-@router.message(StateFilter(ProductFSM.edit_name))
-async def edit_name_apply(message: Message, state: FSMContext, db: Database):
-    name = (message.text or "").strip()
-    if not name:
-        await message.answer("Название не может быть пустым. Введите новое название:")
-        return
-
-    data = await state.get_data()
-    product_id = int(data["product_id"])
-    restaurant_id = int(data["restaurant_id"])
-    category_id = int(data["category_id"])
-    chat_id = int(data["origin_chat_id"])
-    msg_id = int(data["origin_message_id"])
-
-    prod = ProductsRepo(db)
-    await prod.update(product_id, name=name)
-
-    await state.clear()
-
-    await render_product_card_edit(
-        message.bot,
-        chat_id,
-        msg_id,
-        db,
-        restaurant_id,
-        category_id,
-        product_id,
-    )
-
-    try:
-        await message.delete()
-    except Exception:
-        pass
 
 
 @router.message(StateFilter(ProductFSM.edit_price))

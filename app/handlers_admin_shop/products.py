@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 class ProductStates(StatesGroup):
     add_category = State()
     add_product = State()
+    edit_price = State()
+    edit_desc = State()
     search = State()
     bulk_import = State()
 
@@ -65,6 +67,8 @@ def kb_products(cat_id: int, items: list[dict]) -> InlineKeyboardMarkup:
 def kb_product_card(cat_id: int, product_id: int, is_active: int) -> InlineKeyboardMarkup:
     toggle_text = "⛔ Выключить" if int(is_active) == 1 else "✅ Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Изменить цену", callback_data=f"a:pedit_price:{cat_id}:{product_id}")],
+        [InlineKeyboardButton(text="📝 Изменить описание", callback_data=f"a:pedit_desc:{cat_id}:{product_id}")],
         [InlineKeyboardButton(text=toggle_text, callback_data=f"a:ptoggle:{cat_id}:{product_id}")],
         [
             InlineKeyboardButton(text="🔙 Назад", callback_data=f"a:pcat:{cat_id}"),
@@ -91,6 +95,12 @@ def kb_bulk_confirm() -> InlineKeyboardMarkup:
     ])
 
 
+def kb_product_edit_cancel() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="a:pcancel")],
+    ])
+
+
 def bulk_format_hint() -> str:
     return (
         "Ожидаемый формат:\n"
@@ -103,6 +113,36 @@ def bulk_format_hint() -> str:
 async def _get_shop_id_for_admin(db: Database, user_id: int) -> int | None:
     shop_ids = await get_admin_shop_ids(db, user_id)
     return shop_ids[0] if shop_ids else None
+
+
+async def render_product_card_edit(
+    bot,
+    chat_id: int,
+    message_id: int,
+    db: Database,
+    cat_id: int,
+    product_id: int,
+) -> None:
+    repo = ProductsRepo(db)
+    p = await repo.get(product_id)
+    if not p:
+        await bot.edit_message_text("Товар не найден.", chat_id=chat_id, message_id=message_id, reply_markup=kb_home())
+        return
+
+    text = (
+        f"📦 {p['name']}\n"
+        f"Цена: {p['price']}\n"
+    )
+    if p.get("description"):
+        text += f"\nОписание:\n{p['description']}\n"
+    text += f"\nСтатус: {'✅ Активен' if int(p['is_active'])==1 else '⛔ Выключен'}\n"
+
+    await bot.edit_message_text(
+        text,
+        chat_id=chat_id,
+        message_id=message_id,
+        reply_markup=kb_product_card(cat_id, product_id, p["is_active"]),
+    )
 
 
 @router.callback_query(F.data == "a:products")
@@ -273,13 +313,181 @@ async def product_card(cq: CallbackQuery, db: Database):
         await cq.answer()
         return
 
-    text = (
-        f"📦 {p['name']}\n"
-        f"Цена: {p['price']}\n"
-        f"Статус: {'✅ Активен' if int(p['is_active'])==1 else '⛔ Выключен'}\n"
+    text = f"📦 {p['name']}\nЦена: {p['price']}\n"
+    if p.get("description"):
+        text += f"\nОписание:\n{p['description']}\n"
+    text += f"\nСтатус: {'✅ Активен' if int(p['is_active'])==1 else '⛔ Выключен'}\n"
+
+    await cq.message.edit_text(
+        text,
+        reply_markup=kb_product_card(cat_id, product_id, p["is_active"]),
     )
-    await cq.message.edit_text(text, reply_markup=kb_product_card(cat_id, product_id, p["is_active"]))
     await cq.answer()
+
+
+@router.callback_query(F.data.startswith("a:pedit_price:"))
+async def edit_price_prompt(cq: CallbackQuery, state: FSMContext, db: Database):
+    if not await is_shop_admin(db, cq.from_user.id):
+        await cq.answer("Нет доступа", show_alert=True)
+        return
+
+    _, _, cat_id_s, prod_id_s = cq.data.split(":")
+    cat_id = int(cat_id_s)
+    product_id = int(prod_id_s)
+
+    shop_id = await _get_shop_id_for_admin(db, cq.from_user.id)
+    if not shop_id:
+        await cq.answer("Нет магазина", show_alert=True)
+        return
+
+    repo = ProductsRepo(db)
+    p = await repo.get(product_id)
+    if not p or int(p["shop_id"]) != shop_id:
+        await cq.answer("Товар не найден", show_alert=True)
+        return
+
+    await state.update_data(
+        product_id=product_id,
+        category_id=cat_id,
+        origin_chat_id=cq.message.chat.id,
+        origin_message_id=cq.message.message_id,
+    )
+    await state.set_state(ProductStates.edit_price)
+    await cq.message.edit_text(
+        f"Текущая цена: {p['price']}\nВведите новую цену (например 25.50):",
+        reply_markup=kb_product_edit_cancel(),
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("a:pedit_desc:"))
+async def edit_desc_prompt(cq: CallbackQuery, state: FSMContext, db: Database):
+    if not await is_shop_admin(db, cq.from_user.id):
+        await cq.answer("Нет доступа", show_alert=True)
+        return
+
+    _, _, cat_id_s, prod_id_s = cq.data.split(":")
+    cat_id = int(cat_id_s)
+    product_id = int(prod_id_s)
+
+    shop_id = await _get_shop_id_for_admin(db, cq.from_user.id)
+    if not shop_id:
+        await cq.answer("Нет магазина", show_alert=True)
+        return
+
+    repo = ProductsRepo(db)
+    p = await repo.get(product_id)
+    if not p or int(p["shop_id"]) != shop_id:
+        await cq.answer("Товар не найден", show_alert=True)
+        return
+
+    current_desc = p.get("description") or ""
+    await state.update_data(
+        product_id=product_id,
+        category_id=cat_id,
+        origin_chat_id=cq.message.chat.id,
+        origin_message_id=cq.message.message_id,
+    )
+    await state.set_state(ProductStates.edit_desc)
+    await cq.message.edit_text(
+        f"Текущее описание:\n{current_desc}\n\nВведите новое описание или '-' чтобы очистить:",
+        reply_markup=kb_product_edit_cancel(),
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data == "a:pcancel")
+async def cancel_product_edit(cq: CallbackQuery, state: FSMContext, db: Database):
+    data = await state.get_data()
+    await state.clear()
+
+    cat_id = int(data.get("category_id") or 0)
+    product_id = int(data.get("product_id") or 0)
+    if not cat_id or not product_id:
+        await cq.message.edit_text("Действие отменено.", reply_markup=kb_home())
+        await cq.answer()
+        return
+
+    await render_product_card_edit(
+        cq.message.bot,
+        cq.message.chat.id,
+        cq.message.message_id,
+        db,
+        cat_id,
+        product_id,
+    )
+    await cq.answer()
+
+
+@router.message(ProductStates.edit_price)
+async def edit_price_apply(message: Message, state: FSMContext, db: Database):
+    if not await is_shop_admin(db, message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+
+    raw = (message.text or "").strip().replace(",", ".")
+    try:
+        price = float(raw)
+        if price < 0:
+            raise ValueError()
+    except ValueError:
+        await message.answer("Неверный формат цены. Введите число, например 25.50:")
+        return
+
+    data = await state.get_data()
+    product_id = int(data.get("product_id") or 0)
+    cat_id = int(data.get("category_id") or 0)
+    chat_id = int(data.get("origin_chat_id") or 0)
+    msg_id = int(data.get("origin_message_id") or 0)
+
+    if not product_id or not cat_id or not chat_id or not msg_id:
+        await state.clear()
+        await message.answer("Не удалось обновить товар.", reply_markup=kb_admin_main())
+        return
+
+    repo = ProductsRepo(db)
+    await repo.update(product_id, price=price)
+
+    await state.clear()
+    await render_product_card_edit(message.bot, chat_id, msg_id, db, cat_id, product_id)
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+@router.message(ProductStates.edit_desc)
+async def edit_desc_apply(message: Message, state: FSMContext, db: Database):
+    if not await is_shop_admin(db, message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+
+    desc = (message.text or "").strip()
+    if desc == "-":
+        desc = ""
+
+    data = await state.get_data()
+    product_id = int(data.get("product_id") or 0)
+    cat_id = int(data.get("category_id") or 0)
+    chat_id = int(data.get("origin_chat_id") or 0)
+    msg_id = int(data.get("origin_message_id") or 0)
+
+    if not product_id or not cat_id or not chat_id or not msg_id:
+        await state.clear()
+        await message.answer("Не удалось обновить товар.", reply_markup=kb_admin_main())
+        return
+
+    repo = ProductsRepo(db)
+    await repo.update(product_id, description=desc)
+
+    await state.clear()
+    await render_product_card_edit(message.bot, chat_id, msg_id, db, cat_id, product_id)
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("a:ptoggle:"))
@@ -304,14 +512,14 @@ async def toggle_product(cq: CallbackQuery, db: Database):
         return
 
     await cq.answer("Готово ✅")
-    # перерисуем карточку
-    p = await repo.get(product_id)
-    text = (
-        f"📦 {p['name']}\n"
-        f"Цена: {p['price']}\n"
-        f"Статус: {'✅ Активен' if int(p['is_active'])==1 else '⛔ Выключен'}\n"
+    await render_product_card_edit(
+        cq.message.bot,
+        cq.message.chat.id,
+        cq.message.message_id,
+        db,
+        cat_id,
+        product_id,
     )
-    await cq.message.edit_text(text, reply_markup=kb_product_card(cat_id, product_id, p["is_active"]))
 
 
 @router.callback_query(F.data == "a:psearch")
