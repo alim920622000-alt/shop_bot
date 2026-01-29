@@ -11,6 +11,12 @@ from app.handlers_admin_shop.start import kb_admin_main
 from app.repositories.products_repo import ProductsRepo
 from app.services.search_service import SearchService
 from app.services.search_utils import normalize_text
+from app.config import get_settings
+
+def is_superadmin(user_id: int) -> bool:
+    s = get_settings()
+    return user_id in set(s.superadmin_ids)
+
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -29,7 +35,7 @@ def kb_home() -> InlineKeyboardMarkup:
     ])
 
 
-def kb_categories(cats: list[dict]) -> InlineKeyboardMarkup:
+def kb_categories(cats: list[dict], user_id: int) -> InlineKeyboardMarkup:
     kb = []
     for c in cats:
         status = "✅" if int(c["is_active"]) == 1 else "⛔"
@@ -39,7 +45,8 @@ def kb_categories(cats: list[dict]) -> InlineKeyboardMarkup:
         )])
 
     kb.append([InlineKeyboardButton(text="🔎 Поиск по товарам", callback_data="a:psearch")])
-    kb.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="a:paddcat")])
+    if is_superadmin(user_id):
+        kb.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="a:paddcat")])
     kb.append([InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -125,17 +132,24 @@ async def products_root(cq: CallbackQuery, db: Database):
         cats = [dict(r) for r in await cur.fetchall()]
 
     if not cats:
+        is_root = is_superadmin(cq.from_user.id)
+        text = "🧺 Продукты\n\nКатегорий пока нет."
+        if is_root:
+            text += "\nНажми «➕ Добавить категорию»."
+
+        buttons = []
+        if is_root:
+            buttons.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="a:paddcat")])
+        buttons.append([InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")])
+
         await cq.message.edit_text(
-            "🧺 Продукты\n\nКатегорий пока нет.\nНажми «➕ Добавить категорию».",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="a:paddcat")],
-                [InlineKeyboardButton(text="🏠 Главная", callback_data="a:home")],
-            ])
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
         await cq.answer()
         return
 
-    await cq.message.edit_text("🧺 Категории:", reply_markup=kb_categories(cats))
+    await cq.message.edit_text("🧺 Категории:", reply_markup=kb_categories(cats, cq.from_user.id))
     await cq.answer()
 
 
@@ -143,6 +157,10 @@ async def products_root(cq: CallbackQuery, db: Database):
 async def add_category_prompt(cq: CallbackQuery, state: FSMContext, db: Database):
     if not await is_shop_admin(db, cq.from_user.id):
         await cq.answer("Нет доступа", show_alert=True)
+        return
+    
+    if not is_superadmin(cq.from_user.id):
+        await cq.answer("Только супер-админ может добавлять категории.", show_alert=True)
         return
 
     await state.set_state(ProductStates.add_category)
@@ -154,6 +172,11 @@ async def add_category_prompt(cq: CallbackQuery, state: FSMContext, db: Database
 async def add_category_save(message: Message, state: FSMContext, db: Database):
     if not await is_shop_admin(db, message.from_user.id):
         await message.answer("Нет доступа.")
+        return
+    
+    if not is_superadmin(message.from_user.id):
+        await message.answer("Только супер-админ может добавлять категории.")
+        await state.clear()
         return
 
     shop_id = await _get_shop_id_for_admin(db, message.from_user.id)
