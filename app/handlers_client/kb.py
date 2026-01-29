@@ -37,7 +37,7 @@ def kb_shops_list(items: list[dict], kind: str) -> InlineKeyboardMarkup:
         kb.append([InlineKeyboardButton(text=x["name"], callback_data=f"c:pick:{kind}:{x['id']}")])
     kb.append([
         InlineKeyboardButton(text="🏠 Домой", callback_data="c:home"),
-        InlineKeyboardButton(text="🧺 Корзина", callback_data=f"c:cart:{kind}"),
+        InlineKeyboardButton(text="🧺 Корзина", callback_data=f"c:cart:{kind}:shops_list"),
         InlineKeyboardButton(text="🔙 Назад", callback_data="c:back:order_menu"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -53,7 +53,7 @@ def kb_categories_list(categories: list[dict], kind: str, shop_id: int) -> Inlin
     kb.append([InlineKeyboardButton(text="🔎 Поиск", callback_data=f"c:search:{kind}:{shop_id}")])
     kb.append([
         InlineKeyboardButton(text="🏠 Домой", callback_data="c:home"),
-        InlineKeyboardButton(text="🧺 Корзина", callback_data=f"c:cart:{kind}"),
+        InlineKeyboardButton(text="🧺 Корзина", callback_data=f"c:cart:{kind}:categories:{kind}:{shop_id}"),
         InlineKeyboardButton(text="🔙 Назад", callback_data=f"c:back:{kind}_list"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -72,7 +72,10 @@ def kb_products_list(products: list[dict], shop_id: int, category_id: int) -> In
         )])
     kb.append([
         InlineKeyboardButton(text="🏠 Домой", callback_data="c:home"),
-        InlineKeyboardButton(text="🧺 Корзина", callback_data="c:cart:auto"),
+        InlineKeyboardButton(
+            text="🧺 Корзина",
+            callback_data=f"c:cart:auto:products:{shop_id}:{category_id}",
+        ),
         InlineKeyboardButton(text="🔙 Назад", callback_data=f"c:pickback:{shop_id}"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -93,7 +96,13 @@ def kb_product_card(product_id: int, shop_id: int, category_id: int) -> InlineKe
     ])
 
 
-def kb_cart(items: list[dict]) -> InlineKeyboardMarkup:
+def _cart_back_callback(back_target: str | None) -> str:
+    if back_target:
+        return f"c:back:from_cart:{back_target}"
+    return "c:back:from_cart"
+
+
+def kb_cart(items: list[dict], back_target: str | None = None) -> InlineKeyboardMarkup:
     """
     items: [{'product_id','quantity','name','price','shop_id'}, ...]
     callback:
@@ -116,8 +125,14 @@ def kb_cart(items: list[dict]) -> InlineKeyboardMarkup:
         ])
 
     kb.append([InlineKeyboardButton(text="🧾 Оформить заказ", callback_data="c:checkout")])
-    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="c:back:from_cart")])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=_cart_back_callback(back_target))])
     return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def kb_cart_empty(back_target: str | None = None) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=_cart_back_callback(back_target))]
+    ])
 
 
 def kb_checkout_choose_shop(shop_ids: list[int]) -> InlineKeyboardMarkup:
@@ -140,8 +155,8 @@ def kb_after_order() -> InlineKeyboardMarkup:
 
 def kb_cart_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Корзина магазинов", callback_data="c:cart:shop")],
-        [InlineKeyboardButton(text="🍽 Корзина ресторанов", callback_data="c:cart:restaurant")],
+        [InlineKeyboardButton(text="🛒 Корзина магазинов", callback_data="c:cart:shop:cart_menu")],
+        [InlineKeyboardButton(text="🍽 Корзина ресторанов", callback_data="c:cart:restaurant:cart_menu")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="c:back:order_menu")],
     ])
 

@@ -20,6 +20,7 @@ from app.handlers_client.kb import (
     kb_products_list,
     kb_product_card,
     kb_cart,
+    kb_cart_empty,
     kb_checkout_choose_shop,
     kb_after_order,
 )
@@ -29,6 +30,25 @@ router = Router()
 
 class ClientCatalogStates(StatesGroup):
     search = State()
+
+
+def _parse_cart_back_target(parts: list[str]) -> dict | None:
+    if not parts:
+        return None
+    name = parts[0]
+    if name == "shops_list":
+        return {"name": "shops_list"}
+    if name == "restaurants_list":
+        return {"name": "restaurants_list"}
+    if name == "categories" and len(parts) >= 3:
+        return {"name": "categories", "kind": parts[1], "shop_id": int(parts[2])}
+    if name == "products" and len(parts) >= 3:
+        return {"name": "products", "shop_id": int(parts[1]), "category_id": int(parts[2])}
+    if name == "cart_menu":
+        return {"name": "cart_menu"}
+    if name == "order_menu":
+        return {"name": "order_menu"}
+    return None
 
 
 @router.callback_query(F.data == "c:shops")
@@ -204,11 +224,13 @@ async def back_to_categories(cq: CallbackQuery, db: Database):
 
 @router.callback_query(F.data.startswith("c:back:"))
 async def back(cq: CallbackQuery, db: Database, state: FSMContext):
-    target = cq.data.split(":", 2)[2]
+    parts = cq.data.split(":")
+    target = parts[2] if len(parts) > 2 else ""
     data = await state.get_data()
 
     if target == "from_cart":
-        return_view = data.get("cart_return_view")
+        back_parts = parts[3:] if len(parts) > 3 else []
+        return_view = _parse_cart_back_target(back_parts) if back_parts else data.get("cart_return_view")
         if (
             return_view
             and return_view.get("name") == "products"
@@ -240,6 +262,10 @@ async def back(cq: CallbackQuery, db: Database, state: FSMContext):
             return
         if return_view and return_view.get("name") == "cart_menu":
             await cq.message.edit_text("Выберите корзину:", reply_markup=kb_cart_menu())
+            await cq.answer()
+            return
+        if return_view and return_view.get("name") == "order_menu":
+            await cq.message.edit_text("Что будем заказывать?", reply_markup=kb_order_menu())
             await cq.answer()
             return
         if return_view and return_view.get("name") == "shops_list":
@@ -276,7 +302,13 @@ async def back(cq: CallbackQuery, db: Database, state: FSMContext):
         return
 
     if target == "cart":
-        await render_cart(cq.message, cq.from_user.id, db, business_type=data.get("cart_kind"))
+        await render_cart(
+            cq.message,
+            cq.from_user.id,
+            db,
+            business_type=data.get("cart_kind"),
+            back_target=data.get("cart_back_target"),
+        )
         await cq.answer()
         return
 
@@ -288,12 +320,18 @@ async def back(cq: CallbackQuery, db: Database, state: FSMContext):
     await cq.answer("Неизвестный переход", show_alert=True)
 
 
-async def render_cart(message, user_id: int, db: Database, business_type: str | None = None):
+async def render_cart(
+    message,
+    user_id: int,
+    db: Database,
+    business_type: str | None = None,
+    back_target: str | None = None,
+):
     cart = CartRepo(db)
     items = await cart.list_items(user_id, business_type=business_type)
 
     if not items:
-        await message.edit_text("Корзина пуста.", reply_markup=kb_back("from_cart"))
+        await message.edit_text("Корзина пуста.", reply_markup=kb_cart_empty(back_target))
         return
 
     cart_title = "🧺 Корзина"
@@ -309,7 +347,7 @@ async def render_cart(message, user_id: int, db: Database, business_type: str | 
         text_lines.append(f"- {i['name']} x{i['quantity']} = {line_total}")
     text_lines.append(f"\nИтого: {total}")
 
-    await message.edit_text("\n".join(text_lines), reply_markup=kb_cart(items))
+    await message.edit_text("\n".join(text_lines), reply_markup=kb_cart(items, back_target))
 
 
 @router.callback_query(F.data.startswith("c:cart"))
@@ -317,13 +355,24 @@ async def open_cart(cq: CallbackQuery, db: Database, state: FSMContext):
     data = await state.get_data()
     parts = cq.data.split(":")
     kind = parts[2] if len(parts) > 2 else "auto"
+    back_parts = parts[3:] if len(parts) > 3 else []
     if kind == "auto":
         kind = data.get("last_kind") or ""
     business_type = kind if kind in ("shop", "restaurant") else None
-    await state.update_data(cart_return_view=data.get("last_view"))
+    return_view = _parse_cart_back_target(back_parts) or data.get("last_view")
+    await state.update_data(
+        cart_return_view=return_view,
+        cart_back_target=":".join(back_parts) if back_parts else None,
+    )
     if business_type:
         await state.update_data(cart_kind=business_type)
-    await render_cart(cq.message, cq.from_user.id, db, business_type=business_type)
+    await render_cart(
+        cq.message,
+        cq.from_user.id,
+        db,
+        business_type=business_type,
+        back_target=":".join(back_parts) if back_parts else None,
+    )
     await cq.answer()
 
 
@@ -376,7 +425,13 @@ async def cart_inc(cq: CallbackQuery, db: Database, state: FSMContext):
     await cq.answer("Ок")
     # обновим экран корзины
     data = await state.get_data()
-    await render_cart(cq.message, cq.from_user.id, db, business_type=data.get("cart_kind"))
+    await render_cart(
+        cq.message,
+        cq.from_user.id,
+        db,
+        business_type=data.get("cart_kind"),
+        back_target=data.get("cart_back_target"),
+    )
 
 
 @router.callback_query(F.data.startswith("c:cart_dec:"))
@@ -392,7 +447,13 @@ async def cart_dec(cq: CallbackQuery, db: Database, state: FSMContext):
     new_qty = int(current["quantity"]) - 1
     await cart.set_qty(user_id=cq.from_user.id, product_id=product_id, qty=new_qty)
     await cq.answer("Ок")
-    await render_cart(cq.message, cq.from_user.id, db, business_type=data.get("cart_kind"))
+    await render_cart(
+        cq.message,
+        cq.from_user.id,
+        db,
+        business_type=data.get("cart_kind"),
+        back_target=data.get("cart_back_target"),
+    )
 
 
 @router.callback_query(F.data.startswith("c:cart_del:"))
@@ -402,7 +463,13 @@ async def cart_del(cq: CallbackQuery, db: Database, state: FSMContext):
     await cart.set_qty(user_id=cq.from_user.id, product_id=product_id, qty=0)
     await cq.answer("Удалено")
     data = await state.get_data()
-    await render_cart(cq.message, cq.from_user.id, db, business_type=data.get("cart_kind"))
+    await render_cart(
+        cq.message,
+        cq.from_user.id,
+        db,
+        business_type=data.get("cart_kind"),
+        back_target=data.get("cart_back_target"),
+    )
 
 
 @router.callback_query(F.data == "c:checkout")
