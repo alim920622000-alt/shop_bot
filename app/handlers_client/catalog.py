@@ -147,7 +147,10 @@ async def show_category_products(
     products = await prod.list_by_category(category_id, active_only=True)
 
     if not products:
-        await message.edit_text("В этой категории пока нет товаров.", reply_markup=kb_back("order_menu"))
+        await message.edit_text(
+            "В этой категории пока нет товаров.",
+            reply_markup=kb_back(f"categories:shop:{shop_id}"),
+        )
         return
 
     await state.update_data(last_view={"name": "products", "shop_id": shop_id, "category_id": category_id})
@@ -389,7 +392,7 @@ async def search_prompt(cq: CallbackQuery, state: FSMContext):
     await state.update_data(search_shop_id=int(shop_id_str), search_kind=kind)
     await cq.message.edit_text(
         "Введите текст для поиска. Я буду показывать результаты по мере ввода.",
-        reply_markup=kb_back("order_menu"),
+        reply_markup=kb_back(f"categories:{kind}:{shop_id_str}"),
     )
     await cq.answer()
 

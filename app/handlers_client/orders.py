@@ -21,10 +21,13 @@ class ClientChatStates(StatesGroup):
     active = State()
 
 
-def kb_order_card(order_id: int) -> InlineKeyboardMarkup:
+def kb_order_card(order_id: int, back_cb: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💬 Чат по заказу", callback_data=f"c:chat:{order_id}")],
-        [InlineKeyboardButton(text="🏠 Главная", callback_data="c:home")],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data=back_cb),
+            InlineKeyboardButton(text="🏠 Главная", callback_data="c:home"),
+        ],
     ])
 
 
@@ -92,7 +95,8 @@ async def order_card(cq: CallbackQuery, db: Database, state: FSMContext):
     for it in items:
         lines.append(f"- {it['name']} x{it['quantity']} = {it['price_at_moment']}")
 
-    await cq.message.edit_text("\n".join(lines), reply_markup=kb_order_card(order_id))
+    back_cb = "c:history" if o["status"] in DONE_STATUSES else "c:orders"
+    await cq.message.edit_text("\n".join(lines), reply_markup=kb_order_card(order_id, back_cb))
     await cq.answer()
 
 
@@ -166,4 +170,7 @@ async def send_chat_message(message: Message, state: FSMContext, db: Database):
         except Exception:
             pass
 
-    await message.answer("Сообщение отправлено.")
+    await message.answer(
+        "Сообщение отправлено.",
+        reply_markup=kb_chat_nav(order_id),
+    )
