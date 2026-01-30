@@ -136,6 +136,7 @@ async def open_category(cq: CallbackQuery, db: Database, state: FSMContext):
     await cq.answer()
 
 
+# [tkkj
 async def show_category_products(
     message: Message,
     db: Database,
